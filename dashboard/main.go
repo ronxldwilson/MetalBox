@@ -123,6 +123,7 @@ type ServiceStatus struct {
 	Limit    string         `json:"limit"`
 	LimitMB  *float64       `json:"limit_mb"`
 	Uptime   string         `json:"uptime"`
+	UptimeSec int           `json:"uptime_seconds"`
 	Command  string         `json:"command"`
 	Restarts int            `json:"restarts"`
 	CPUMode  string         `json:"cpu_mode"`
@@ -451,7 +452,7 @@ func handleServices(w http.ResponseWriter, r *http.Request) {
 				if cpu >= 0 {
 					s.CPU = &cpu
 				}
-				s.Uptime = getUptime(pid)
+				s.Uptime, s.UptimeSec = getUptime(pid)
 
 				// GPU stats
 				metalMem := parseBytes(svc.Resources.MetalMemory)
@@ -1234,12 +1235,29 @@ func getProcessStats(pid int) (rss int64, cpu float64) {
 	return
 }
 
-func getUptime(pid int) string {
+func getUptime(pid int) (string, int) {
 	out, err := exec.Command("ps", "-o", "etime=", "-p", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return "-"
+		return "-", 0
 	}
-	return strings.TrimSpace(string(out))
+	s := strings.TrimSpace(string(out))
+	return s, parseEtime(s)
+}
+
+func parseEtime(s string) int {
+	// etime formats: "MM:SS", "HH:MM:SS", "D-HH:MM:SS"
+	days := 0
+	if i := strings.Index(s, "-"); i >= 0 {
+		days, _ = strconv.Atoi(s[:i])
+		s = s[i+1:]
+	}
+	parts := strings.Split(s, ":")
+	secs := 0
+	for _, p := range parts {
+		v, _ := strconv.Atoi(p)
+		secs = secs*60 + v
+	}
+	return days*86400 + secs
 }
 
 func readGPUStats(name string, metalMem int64) *GPUStats {

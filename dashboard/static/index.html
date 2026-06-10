@@ -38,7 +38,10 @@
   .services-table th {
     text-align: left; padding: 12px 16px; font-size: 12px; color: var(--text2);
     text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none; white-space: nowrap;
   }
+  .services-table th:hover { color: var(--accent); }
+  .services-table th .sort-arrow { margin-left: 4px; font-size: 10px; }
   .services-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   .services-table tr:last-child td { border-bottom: none; }
   .services-table tr:hover td { background: rgba(88,166,255,0.04); }
@@ -150,13 +153,13 @@
   <table class="services-table">
     <thead>
       <tr>
-        <th>Service</th>
-        <th>Status</th>
-        <th>PID</th>
-        <th>Memory</th>
-        <th>GPU</th>
-        <th>CPU</th>
-        <th>Uptime</th>
+        <th onclick="sortBy('name')">Service<span class="sort-arrow" id="sort-name"></span></th>
+        <th onclick="sortBy('status')">Status<span class="sort-arrow" id="sort-status"></span></th>
+        <th onclick="sortBy('pid')">PID<span class="sort-arrow" id="sort-pid"></span></th>
+        <th onclick="sortBy('memory')">Memory<span class="sort-arrow" id="sort-memory"></span></th>
+        <th onclick="sortBy('gpu')">GPU<span class="sort-arrow" id="sort-gpu"></span></th>
+        <th onclick="sortBy('cpu')">CPU<span class="sort-arrow" id="sort-cpu"></span></th>
+        <th onclick="sortBy('uptime')">Uptime<span class="sort-arrow" id="sort-uptime"></span></th>
         <th>Actions</th>
       </tr>
     </thead>
@@ -183,6 +186,8 @@ let services = [];
 let activePanel = null;
 let activeTab = 'logs';
 let logRefreshInterval = null;
+let sortCol = null;
+let sortAsc = true;
 
 async function fetchServices() {
   try {
@@ -193,6 +198,26 @@ async function fetchServices() {
     document.getElementById('conn-dot').className = 'status-dot green';
   } catch {
     document.getElementById('conn-dot').className = 'status-dot red';
+  }
+}
+
+function sortBy(col) {
+  if (sortCol === col) { sortAsc = !sortAsc; }
+  else { sortCol = col; sortAsc = true; }
+  render();
+}
+
+function getSortValue(s, col) {
+  switch (col) {
+    case 'name': return s.name || '';
+    case 'status': return s.status || '';
+    case 'pid': return s.pid || 0;
+    case 'memory': return s.rss_mb || 0;
+    case 'gpu': return (s.gpu && s.gpu.active_mb) || 0;
+    case 'cpu': return s.cpu_percent || 0;
+    case 'uptime': return s.uptime_seconds || 0;
+    case 'restarts': return s.restarts || 0;
+    default: return 0;
   }
 }
 
@@ -207,8 +232,23 @@ function render() {
   document.getElementById('s-stopped').textContent = stopped;
   document.getElementById('s-rss').textContent = totalRSS > 0 ? Math.round(totalRSS) + ' MB' : '-';
 
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  if (sortCol) {
+    const arrow = document.getElementById('sort-' + sortCol);
+    if (arrow) arrow.textContent = sortAsc ? ' ▲' : ' ▼';
+  }
+
+  let sorted = [...services];
+  if (sortCol) {
+    sorted.sort((a, b) => {
+      const va = getSortValue(a, sortCol), vb = getSortValue(b, sortCol);
+      const cmp = typeof va === 'string' ? va.localeCompare(vb) : va - vb;
+      return sortAsc ? cmp : -cmp;
+    });
+  }
+
   const tbody = document.getElementById('svc-body');
-  tbody.innerHTML = services.map(s => {
+  tbody.innerHTML = sorted.map(s => {
     const isRunning = s.status === 'running';
     const rss = s.rss_mb ? s.rss_mb.toFixed(0) : '-';
     const limitMB = s.limit_mb ? s.limit_mb.toFixed(0) : null;
