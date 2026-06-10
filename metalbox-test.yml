@@ -23,6 +23,21 @@ services:
       read_write:
         - /tmp
 
+  tiny-llm:
+    command: uv run python -m uvicorn server:app --host 0.0.0.0 --port 8085
+    workdir: /Users/ron/Desktop/tipstat/sourcer/metalbox/examples/tiny-llm
+    ports: [8085]
+    resources:
+      memory: 512m
+      cpus: background
+    restart: "no"
+    healthcheck:
+      url: http://127.0.0.1:8085/healthz
+      interval: 10
+      timeout: 5
+      retries: 3
+      start_period: 30
+
   sandboxed:
     command: >-
       python3 -c "import time, os; print('sandboxed started'); print('can read /tmp:', os.path.exists('/tmp')); [time.sleep(5) or print(f'alive {i}') for i in range(9999)]"

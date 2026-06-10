@@ -760,6 +760,7 @@ func generateSandboxProfile(sb *SandboxConfig, workdir, logDir string) string {
 func stopService(name string) error {
 	st := getState(name)
 	st.mu.Lock()
+	st.manuallyStopped = true
 	if st.guardStop != nil {
 		close(st.guardStop)
 		st.guardStop = nil
@@ -791,7 +792,6 @@ func stopService(name string) error {
 	os.Remove(pidFile)
 
 	st.mu.Lock()
-	st.manuallyStopped = true
 	addEvent(st, "stopped", "user stopped")
 	st.pid = 0
 	st.healthy = nil
