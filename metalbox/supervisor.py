@@ -15,6 +15,7 @@ from metalbox.config import Config, Service
 from metalbox.guard import ResourceGuard
 from metalbox.healthcheck import HealthMonitor
 from metalbox.logger import open_log
+from metalbox.metal import wrap_command as metal_wrap
 from metalbox.taskpolicy import wrap_command
 
 log = logging.getLogger("metalbox")
@@ -105,7 +106,17 @@ class Supervisor:
 
     def _start_service(self, name: str):
         svc = self._config.services[name]
-        cmd = wrap_command(svc.command, svc.resources.cpus)
+
+        actual_cmd = svc.command
+        wrapped = metal_wrap(
+            svc.command, svc.resources.metal_memory, svc.resources.metal_cache, name,
+        )
+        if wrapped:
+            actual_cmd = wrapped
+            log.info("[%s] Metal limits injected (mem=%s, cache=%s)",
+                     name, svc.resources.metal_memory, svc.resources.metal_cache)
+
+        cmd = wrap_command(actual_cmd, svc.resources.cpus)
         env = {**os.environ, "PYTHONUNBUFFERED": "1", **svc.env}
 
         if svc.resources.metal_memory:
@@ -143,6 +154,7 @@ class Supervisor:
         guard = ResourceGuard(
             pid=proc.pid,
             memory_limit=svc.resources.memory,
+            metal_memory_limit=svc.resources.metal_memory,
             service_name=name,
         )
         guard.start()

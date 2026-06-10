@@ -161,5 +161,63 @@ def run(service, config):
         sys.exit(130)
 
 
+@main.command()
+@click.option("-f", "--file", "config", default="metalbox.yml", help="Config file")
+@click.option("-w", "--watch", "do_watch", is_flag=True, help="Live refresh every 2s")
+def stats(config, do_watch):
+    """Live resource dashboard — RSS, Metal memory, CPU% per service."""
+    import psutil
+    from metalbox.supervisor import RUN_DIR
+    from metalbox.metal import query_metal_memory
+
+    cfg = load(config)
+
+    def _render():
+        click.echo(
+            f"{'SERVICE':<16} {'PID':<8} {'RSS':<10} {'RSS LIM':<10} "
+            f"{'METAL':<10} {'METAL LIM':<10} {'CPU%':<8}"
+        )
+        click.echo("-" * 82)
+        for name, svc in cfg.services.items():
+            pid_file = RUN_DIR / f"{name}.pid"
+            pid = rss = cpu = None
+            if pid_file.exists():
+                pid = int(pid_file.read_text().strip())
+                try:
+                    p = psutil.Process(pid)
+                    rss = p.memory_info().rss
+                    cpu = p.cpu_percent(interval=0.1)
+                except Exception:
+                    pid = None
+
+            pid_s = str(pid) if pid else "-"
+            rss_s = f"{rss/(1024**2):.0f}MB" if rss else "-"
+            rss_lim = f"{svc.resources.memory/(1024**2):.0f}MB" if svc.resources.memory else "-"
+            metal_lim = f"{svc.resources.metal_memory/(1024**2):.0f}MB" if svc.resources.metal_memory else "-"
+            cpu_s = f"{cpu:.1f}%" if cpu is not None else "-"
+
+            metal_s = "-"
+            metal = query_metal_memory()
+            if metal:
+                metal_s = f"{metal['active']/(1024**2):.0f}MB"
+
+            click.echo(
+                f"{name:<16} {pid_s:<8} {rss_s:<10} {rss_lim:<10} "
+                f"{metal_s:<10} {metal_lim:<10} {cpu_s:<8}"
+            )
+
+    if do_watch:
+        try:
+            while True:
+                click.clear()
+                click.echo("metalbox stats (ctrl+c to stop)\n")
+                _render()
+                time.sleep(2)
+        except KeyboardInterrupt:
+            pass
+    else:
+        _render()
+
+
 if __name__ == "__main__":
     main()
