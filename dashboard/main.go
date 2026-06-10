@@ -375,10 +375,19 @@ func main() {
 }
 
 func shutdownAllServices() {
+	cfg, _ := loadConfig()
+
 	files, err := filepath.Glob(filepath.Join(runDir, "*.pid"))
 	if err != nil {
 		return
 	}
+
+	type target struct {
+		name string
+		pid  int
+	}
+	var targets []target
+
 	for _, pidFile := range files {
 		pidData, err := os.ReadFile(pidFile)
 		if err != nil {
@@ -386,21 +395,35 @@ func shutdownAllServices() {
 		}
 		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
 		name := strings.TrimSuffix(filepath.Base(pidFile), ".pid")
-		if pid > 0 && processAlive(pid) {
-			log.Printf("[%s] shutting down (pid %d)", name, pid)
-			killProcessTree(pid, syscall.SIGTERM)
+		if pid <= 0 || !processAlive(pid) {
+			os.Remove(pidFile)
+			continue
 		}
+		// Verify this PID belongs to us before killing
+		if cfg != nil {
+			if svc, ok := cfg.Services[name]; ok {
+				if !processMatchesCommand(pid, svc.Command) {
+					log.Printf("[%s] pid %d doesn't match expected command, skipping kill", name, pid)
+					os.Remove(pidFile)
+					continue
+				}
+			}
+		}
+		targets = append(targets, target{name, pid})
+		log.Printf("[%s] shutting down (pid %d)", name, pid)
+		killProcessTree(pid, syscall.SIGTERM)
 		os.Remove(pidFile)
 	}
-	// Give processes a moment to exit, then force-kill survivors
+
+	if len(targets) == 0 {
+		return
+	}
+
 	time.Sleep(3 * time.Second)
-	for _, pidFile := range files {
-		pidData, _ := os.ReadFile(pidFile)
-		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
-		if pid > 0 && anyTreeAlive(pid) {
-			name := strings.TrimSuffix(filepath.Base(pidFile), ".pid")
-			log.Printf("[%s] force-killing (pid %d)", name, pid)
-			killProcessTree(pid, syscall.SIGKILL)
+	for _, t := range targets {
+		if anyTreeAlive(t.pid) {
+			log.Printf("[%s] force-killing (pid %d)", t.name, t.pid)
+			killProcessTree(t.pid, syscall.SIGKILL)
 		}
 	}
 }
@@ -1223,13 +1246,10 @@ func getDescendants(pid int) []int {
 // killProcessTree kills a process and all its descendants, bottom-up.
 func killProcessTree(pid int, sig syscall.Signal) {
 	descendants := getDescendants(pid)
-	// Kill bottom-up (children first) to prevent orphaning
 	for i := len(descendants) - 1; i >= 0; i-- {
 		syscall.Kill(descendants[i], sig)
 	}
 	syscall.Kill(pid, sig)
-	// Also signal the process group in case any were missed
-	syscall.Kill(-pid, sig)
 }
 
 // anyTreeAlive checks if any process in the tree is still running.
