@@ -1,5 +1,9 @@
 # MetalBox
 
+<p align="center">
+  <img src="assets/logo.svg" alt="MetalBox" width="400"/>
+</p>
+
 Lightweight process containerization for macOS Apple Silicon. Run ML workloads with Metal/MLX acceleration and Docker-like resource limits — without a Linux VM.
 
 ## The problem
