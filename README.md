@@ -60,6 +60,8 @@ metalbox serve
 The dashboard runs on `localhost:9090` and provides:
 
 - **Service overview** — status, PID, RSS, CPU%, memory usage bars
+- **GPU memory monitoring** — active/peak/cache usage for Metal/MLX workloads
+- **Resource history sparklines** — inline charts showing RSS trends over time
 - **Start / Stop / Restart** buttons per service
 - **Log viewer** with auto-refresh
 - **Event timeline** — starts, stops, OOM kills, health check failures, restarts
@@ -82,6 +84,26 @@ metalbox start myapp             # start a service
 metalbox stop myapp              # stop a service
 metalbox restart myapp           # restart a service
 metalbox logs myapp              # view logs
+
+# One-shot execution (no server, no config file needed)
+metalbox run --memory 2g "python train.py"
+metalbox run --memory 512m --metal-memory 1g "python -m uvicorn app:app"
+metalbox run --cpus background "python bench.py"
+```
+
+### `metalbox run`
+
+Run any command with resource limits — no YAML config or dashboard server needed. MetalBox starts the process, enforces limits, and exits when it finishes.
+
+```bash
+metalbox run [OPTIONS] "command"
+
+Options:
+  -m, --memory        RSS memory limit (e.g. 2g, 512m)
+  --metal-memory      Metal GPU memory limit
+  --metal-cache       Metal cache limit
+  --cpus              CPU policy: default or background
+  --name              Service name (default: derived from command)
 ```
 
 ## Config
@@ -114,7 +136,7 @@ services:
     resources:
       memory: 128m
     restart: always
-    depends_on:
+    depends_on:                 # start after these services are healthy
       - inference
     sandbox:                    # filesystem + network isolation (macOS sandbox-exec)
       allow_net: true           # allow network access (default: false)
@@ -122,6 +144,26 @@ services:
         - /etc/config
       read_write:               # additional writable paths (workdir + /tmp always allowed)
         - /var/data
+```
+
+### Service dependencies
+
+`depends_on` delays a service's start until its dependencies are healthy. If a dependency has a `healthcheck`, MetalBox waits for it to pass before starting the dependent service. If there's no healthcheck, it waits for the process to be running.
+
+```yaml
+services:
+  api:
+    command: python -m uvicorn app:app --port 8080
+    healthcheck:
+      url: http://127.0.0.1:8080/healthz
+      interval: 10
+      retries: 3
+      start_period: 60
+
+  proxy:
+    command: caddy reverse-proxy --from :443 --to :8080
+    depends_on:
+      - api    # proxy won't start until api's healthcheck passes
 ```
 
 ### Environment isolation
@@ -134,13 +176,19 @@ To opt into full parent env inheritance, set `env_inherit: true` on a service.
 
 | Resource | Mechanism | Hard? |
 |----------|-----------|-------|
-| **Memory (RSS)** | Go watchdog goroutine polls `ps` every 5s — kills process group if RSS exceeds limit, auto-restarts per policy | Yes (kill + restart) |
+| **Memory (RSS)** | Go watchdog polls `footprint` every 5s across the full process tree — kills + auto-restarts if exceeded | Yes (kill + restart) |
 | **Metal memory** | Wrapper injection: auto-generates a Python script calling `mx.metal.set_memory_limit()` before your app imports anything | Yes (Metal API) |
 | **Metal cache** | Same wrapper calls `mx.metal.set_cache_limit()` | Yes (Metal API) |
 | **CPU** | `taskpolicy -b` for background QoS (E-cores only), or default (all cores) | Structural (not %) |
 | **Health checks** | HTTP GET / TCP connect / shell command — restart on consecutive failures | Configurable retries |
 
-macOS has no cgroups. RSS limits (`ulimit -m`) are silently ignored by the kernel. MetalBox enforces memory limits by monitoring RSS and killing the process if it exceeds the cap — then auto-restarting per the configured restart policy. This is the only reliable approach on macOS.
+macOS has no cgroups. RSS limits (`ulimit -m`) are silently ignored by the kernel. MetalBox enforces memory limits by monitoring RSS across the entire process tree (using macOS `footprint` for accurate measurement) and killing if exceeded — then auto-restarting per the configured restart policy.
+
+### GPU monitoring
+
+For Metal/MLX workloads, the dashboard shows real-time GPU memory usage (active, peak, and cache) alongside RSS. A background reporter thread in the Metal wrapper writes stats to `~/.metalbox/stats/` every 5 seconds, which the dashboard picks up automatically.
+
+The dashboard also renders **resource history sparklines** — inline SVG charts showing RSS trends over the last 60 samples, so you can spot memory leaks or load patterns at a glance.
 
 ### Metal memory injection
 
@@ -205,6 +253,8 @@ cd metalbox
 ./build.sh         # builds Go binary + Python wheel
 pip install dist/*.whl
 ```
+
+Pre-built wheels are published for both **Apple Silicon (arm64)** and **Intel (x86_64)** Macs. `pip install` automatically picks the right one for your architecture.
 
 ## Requirements
 
