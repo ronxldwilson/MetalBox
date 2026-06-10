@@ -1,10 +1,13 @@
-"""MetalBox CLI — thin client for the metalbox dashboard server."""
+"""MetalBox CLI — thin client + server launcher."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import urllib.request
 import urllib.error
+from pathlib import Path
 
 import click
 
@@ -14,20 +17,32 @@ BASE = "http://localhost:{port}"
 DEFAULT_PORT = "9090"
 
 
+def _find_dashboard() -> str | None:
+    """Find the metalbox-dashboard binary."""
+    # 1. Bundled in package
+    pkg = Path(__file__).parent / "bin" / "metalbox-dashboard"
+    if pkg.exists():
+        return str(pkg)
+    # 2. On PATH
+    from shutil import which
+    return which("metalbox-dashboard")
+
+
 def _api(path: str, method: str = "GET", port: str = DEFAULT_PORT) -> dict | str:
     url = BASE.format(port=port) + path
-    req = urllib.request.Request(url, method=method.encode() if method != "GET" else None)
     if method == "POST":
         req = urllib.request.Request(url, data=b"", method="POST")
+    else:
+        req = urllib.request.Request(url)
     try:
         resp = urllib.request.urlopen(req, timeout=10)
         body = resp.read().decode()
         if resp.headers.get("Content-Type", "").startswith("application/json"):
             return json.loads(body)
         return body
-    except urllib.error.URLError as e:
+    except urllib.error.URLError:
         click.echo(f"error: cannot reach metalbox server on port {port}", err=True)
-        click.echo("is `metalbox-dashboard` running?", err=True)
+        click.echo("start it with: metalbox serve", err=True)
         sys.exit(1)
 
 
@@ -39,6 +54,37 @@ def main(ctx, port):
     """MetalBox — lightweight process containerization for macOS Apple Silicon."""
     ctx.ensure_object(dict)
     ctx.obj["port"] = port
+
+
+@main.command()
+@click.option("-f", "--file", "config", default="metalbox.yml", help="Config file")
+@click.option("-p", "--port", default=DEFAULT_PORT, help="Dashboard port")
+@click.option("-d", "--detach", is_flag=True, help="Run in background")
+def serve(config, port, detach):
+    """Start the metalbox dashboard server."""
+    binary = _find_dashboard()
+    if not binary:
+        click.echo("error: metalbox-dashboard binary not found", err=True)
+        click.echo("install metalbox with: pip install metalbox", err=True)
+        sys.exit(1)
+
+    config_abs = str(Path(config).resolve())
+    env = {**os.environ, "METALBOX_CONFIG": config_abs, "METALBOX_PORT": port}
+
+    if detach:
+        proc = subprocess.Popen(
+            [binary], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        click.echo(f"metalbox dashboard started on http://localhost:{port} (pid {proc.pid})")
+        return
+
+    click.echo(f"metalbox dashboard on http://localhost:{port}")
+    try:
+        subprocess.run([binary], env=env)
+    except KeyboardInterrupt:
+        pass
 
 
 @main.command()
