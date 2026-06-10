@@ -6,11 +6,20 @@ on:
       - "v*"
 
 jobs:
-  build-and-publish:
-    runs-on: macos-14  # Apple Silicon (M1)
-    permissions:
-      id-token: write  # for trusted publishing
-      contents: read
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            goos: darwin
+            goarch: arm64
+            platform_tag: macosx_14_0_arm64
+          - os: macos-13
+            goos: darwin
+            goarch: amd64
+            platform_tag: macosx_13_0_x86_64
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +38,7 @@ jobs:
       - name: Build Go binary
         run: |
           cd dashboard
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../metalbox/bin/metalbox-dashboard .
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -ldflags="-s -w" -o ../metalbox/bin/metalbox-dashboard .
           chmod +x ../metalbox/bin/metalbox-dashboard
           touch ../metalbox/bin/__init__.py
 
@@ -48,20 +57,22 @@ jobs:
         run: |
           WHEEL=$(ls dist/metalbox-*.whl)
           VERSION=${{ steps.version.outputs.version }}
-          TAGGED="dist/metalbox-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+          TAG=${{ matrix.platform_tag }}
+          TAGGED="dist/metalbox-${VERSION}-py3-none-${TAG}.whl"
 
           python3 -c "
           import zipfile, os
 
           src = '$WHEEL'
           dst = '$TAGGED'
+          tag = '$TAG'
           tmp = dst + '.tmp'
 
           with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(tmp, 'w') as zout:
               for item in zin.infolist():
                   data = zin.read(item.filename)
                   if item.filename.endswith('/WHEEL'):
-                      data = data.replace(b'Tag: py3-none-any', b'Tag: py3-none-macosx_14_0_arm64')
+                      data = data.replace(b'Tag: py3-none-any', b'Tag: py3-none-' + tag.encode())
                       data = data.replace(b'Root-Is-Purelib: true', b'Root-Is-Purelib: false')
                   zout.writestr(item, data)
 
@@ -69,6 +80,24 @@ jobs:
           if src != dst:
               os.remove(src)
           "
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform_tag }}
+          path: dist/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Publish to PyPI
         env:
