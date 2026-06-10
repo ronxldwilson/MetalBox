@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="box-face-top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#C0C0C0"/>
+      <stop offset="50%" stop-color="#E8E8E8"/>
+      <stop offset="100%" stop-color="#A0A0A0"/>
+    </linearGradient>
+    <linearGradient id="box-face-left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#909090"/>
+      <stop offset="100%" stop-color="#606060"/>
+    </linearGradient>
+    <linearGradient id="box-face-right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B0B0B0"/>
+      <stop offset="100%" stop-color="#787878"/>
+    </linearGradient>
+    <linearGradient id="chip-glow" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#7DD3FC"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+    <linearGradient id="circuit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#3B82F6"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Isometric box -->
+  <g filter="url(#shadow)" transform="translate(256, 240)">
+    <!-- Top face -->
+    <polygon points="0,-120 160,-40 0,40 -160,-40" fill="url(#box-face-top)" stroke="#999" stroke-width="1.5"/>
+    <!-- Left face -->
+    <polygon points="-160,-40 0,40 0,180 -160,100" fill="url(#box-face-left)" stroke="#888" stroke-width="1.5"/>
+    <!-- Right face -->
+    <polygon points="160,-40 0,40 0,180 160,100" fill="url(#box-face-right)" stroke="#888" stroke-width="1.5"/>
+
+    <!-- Metallic edge highlights -->
+    <line x1="-160" y1="-40" x2="0" y2="40" stroke="#D0D0D0" stroke-width="0.5" opacity="0.6"/>
+    <line x1="0" y1="-120" x2="160" y2="-40" stroke="#F0F0F0" stroke-width="0.5" opacity="0.4"/>
+
+    <!-- GPU chip on top face (isometric) -->
+    <g transform="translate(0, -40)">
+      <!-- Chip body -->
+      <polygon points="0,-50 80,-10 0,30 -80,-10" fill="url(#chip-glow)" stroke="#1D4ED8" stroke-width="1.5" filter="url(#glow)"/>
+      <!-- Chip inner die -->
+      <polygon points="0,-32 48,-8 0,16 -48,-8" fill="#1E3A5F" stroke="#60A5FA" stroke-width="1" opacity="0.9"/>
+      <!-- Die grid lines -->
+      <line x1="-24" y1="-20" x2="24" y2="4" stroke="#60A5FA" stroke-width="0.5" opacity="0.5"/>
+      <line x1="-24" y1="-12" x2="24" y2="-4" stroke="#60A5FA" stroke-width="0.5" opacity="0.5"/>
+      <line x1="0" y1="-32" x2="0" y2="16" stroke="#60A5FA" stroke-width="0.5" opacity="0.5"/>
+      <line x1="-16" y1="-4" x2="16" y2="-20" stroke="#60A5FA" stroke-width="0.5" opacity="0.5"/>
+
+    </g>
+
+    <!-- Ventilation slots on right face -->
+    <g opacity="0.3">
+      <line x1="40" y1="70" x2="120" y2="30" stroke="#555" stroke-width="2"/>
+      <line x1="40" y1="85" x2="120" y2="45" stroke="#555" stroke-width="2"/>
+      <line x1="40" y1="100" x2="120" y2="60" stroke="#555" stroke-width="2"/>
+      <line x1="40" y1="115" x2="120" y2="75" stroke="#555" stroke-width="2"/>
+      <line x1="40" y1="130" x2="120" y2="90" stroke="#555" stroke-width="2"/>
+    </g>
+
+    <!-- Status LED on left face -->
+    <circle cx="-100" cy="100" r="5" fill="#22C55E" filter="url(#glow)"/>
+  </g>
+
+  <!-- Text -->
+  <text x="256" y="460" text-anchor="middle" font-family="-apple-system, SF Pro Display, Helvetica Neue, sans-serif" font-size="48" font-weight="700" letter-spacing="4" fill="#333333">
+    METALBOX
+  </text>
+  <text x="256" y="488" text-anchor="middle" font-family="-apple-system, SF Pro Display, Helvetica Neue, sans-serif" font-size="14" font-weight="400" letter-spacing="6" fill="#666666">
+    NATIVE GPU CONTAINERS
+  </text>
+</svg>
