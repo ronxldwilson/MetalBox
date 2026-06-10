@@ -119,8 +119,14 @@
   .sparkline { display: inline-block; vertical-align: middle; }
   .sparkline svg { display: block; }
 
-  .chart-container { padding: 16px; }
-  .chart-container canvas { width: 100%; height: 120px; }
+  .charts-wrap { padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+  .chart-box { position: relative; }
+  .chart-box .chart-label {
+    font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
+    margin-bottom: 6px; display: flex; justify-content: space-between;
+  }
+  .chart-box .chart-label .chart-value { color: var(--text); font-weight: 500; }
+  .chart-box canvas { width: 100%; height: 140px; border-radius: 6px; background: var(--bg); }
 </style>
 </head>
 <body>
@@ -171,6 +177,7 @@
       <h3 id="panel-title">Details</h3>
       <div style="display:flex;gap:8px;align-items:center">
         <div class="panel-tabs">
+          <button class="panel-tab" onclick="switchTab('charts')">Charts</button>
           <button class="panel-tab active" onclick="switchTab('logs')">Logs</button>
           <button class="panel-tab" onclick="switchTab('events')">Events</button>
         </div>
@@ -344,6 +351,66 @@ async function loadPanelContent() {
   if (!activePanel) return;
   const body = document.getElementById('panel-body');
 
+  if (activeTab === 'charts') {
+    body.style.whiteSpace = 'normal';
+    body.style.fontFamily = 'inherit';
+    const svc = services.find(s => s.name === activePanel);
+    if (!svc || !svc.history || svc.history.length < 2) {
+      body.innerHTML = '<span style="color:var(--text2)">waiting for data... (samples collected every 5s)</span>';
+      return;
+    }
+    const h = svc.history;
+    const lastRSS = h[h.length - 1].rss_mb;
+    const lastCPU = h[h.length - 1].cpu;
+    const limitMB = svc.limit_mb;
+    const gpu = svc.gpu;
+
+    let html = `<div class="charts-wrap">
+      <div class="chart-box">
+        <div class="chart-label">
+          <span>RSS Memory</span>
+          <span class="chart-value">${lastRSS.toFixed(0)} MB${limitMB ? ' / ' + limitMB.toFixed(0) + ' MB' : ''}</span>
+        </div>
+        <canvas id="chart-rss" height="140"></canvas>
+      </div>
+      <div class="chart-box">
+        <div class="chart-label">
+          <span>CPU Usage</span>
+          <span class="chart-value">${lastCPU.toFixed(1)}%</span>
+        </div>
+        <canvas id="chart-cpu" height="140"></canvas>
+      </div>`;
+
+    if (gpu && gpu.active_mb != null) {
+      html += `<div class="chart-box">
+        <div class="chart-label">
+          <span>GPU Memory (Metal)</span>
+          <span class="chart-value">${gpu.active_mb.toFixed(0)} MB${gpu.limit_mb ? ' / ' + gpu.limit_mb.toFixed(0) + ' MB' : ''}</span>
+        </div>
+        <div style="padding:12px;background:var(--bg);border-radius:6px;font-size:13px;color:var(--text2)">
+          Active: <strong style="color:var(--yellow)">${gpu.active_mb.toFixed(0)} MB</strong>
+          &nbsp;&nbsp;Peak: <strong style="color:var(--orange)">${gpu.peak_mb.toFixed(0)} MB</strong>
+          &nbsp;&nbsp;Cache: <strong style="color:var(--accent)">${gpu.cache_mb.toFixed(0)} MB</strong>
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+    body.innerHTML = html;
+
+    drawChart('chart-rss', h.map(p => p.rss_mb), {
+      color: '#3fb950', fillColor: 'rgba(63,185,80,0.1)',
+      limitLine: limitMB, unit: 'MB'
+    });
+    drawChart('chart-cpu', h.map(p => p.cpu), {
+      color: '#58a6ff', fillColor: 'rgba(88,166,255,0.1)',
+      maxVal: Math.max(100, ...h.map(p => p.cpu)), unit: '%'
+    });
+    return;
+  }
+
+  body.style.whiteSpace = 'pre-wrap';
+  body.style.fontFamily = "'SF Mono', 'Fira Code', monospace";
+
   if (activeTab === 'logs') {
     try {
       const r = await fetch('/api/logs/' + activePanel + '?lines=200');
@@ -369,6 +436,102 @@ async function loadPanelContent() {
       </div>`;
     }).join('');
   }
+}
+
+function drawChart(canvasId, data, opts) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const w = rect.width, h = rect.height;
+  const pad = { top: 10, right: 12, bottom: 24, left: 48 };
+  const cw = w - pad.left - pad.right;
+  const ch = h - pad.top - pad.bottom;
+
+  const maxVal = opts.maxVal || opts.limitLine || Math.max(...data) * 1.2 || 1;
+  const minVal = 0;
+
+  // grid lines
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + (ch / gridLines) * i;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(w - pad.right, y);
+    ctx.stroke();
+
+    const val = maxVal - (maxVal / gridLines) * i;
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '10px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(val.toFixed(0) + (opts.unit || ''), pad.left - 6, y + 3);
+  }
+
+  // time labels
+  ctx.fillStyle = '#8b949e';
+  ctx.textAlign = 'center';
+  ctx.font = '10px -apple-system, system-ui, sans-serif';
+  const totalSec = data.length * 5;
+  const labels = [0, Math.floor(data.length / 2), data.length - 1];
+  labels.forEach(i => {
+    const x = pad.left + (i / (data.length - 1)) * cw;
+    const ago = (data.length - 1 - i) * 5;
+    ctx.fillText(ago === 0 ? 'now' : `-${ago}s`, x, h - 4);
+  });
+
+  // limit line
+  if (opts.limitLine) {
+    const ly = pad.top + ch - (opts.limitLine / maxVal) * ch;
+    ctx.strokeStyle = '#f8514980';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, ly);
+    ctx.lineTo(w - pad.right, ly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#f85149';
+    ctx.textAlign = 'left';
+    ctx.fillText('limit', w - pad.right + 2, ly + 3);
+  }
+
+  // data line + fill
+  const points = data.map((v, i) => ({
+    x: pad.left + (i / (data.length - 1)) * cw,
+    y: pad.top + ch - (v / maxVal) * ch
+  }));
+
+  // fill
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, pad.top + ch);
+  points.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(points[points.length - 1].x, pad.top + ch);
+  ctx.closePath();
+  ctx.fillStyle = opts.fillColor;
+  ctx.fill();
+
+  // line
+  ctx.beginPath();
+  points.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+  ctx.strokeStyle = opts.color;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // current value dot
+  const last = points[points.length - 1];
+  ctx.beginPath();
+  ctx.arc(last.x, last.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = opts.color;
+  ctx.fill();
 }
 
 function buildSparkline(data, w, h) {

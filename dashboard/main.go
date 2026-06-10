@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -359,8 +360,49 @@ func main() {
 	mux.HandleFunc("/api/logs/", handleLogs)
 	mux.HandleFunc("/", handleIndex)
 
+	// Graceful shutdown: kill all managed processes on SIGINT/SIGTERM
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("received %s, shutting down managed processes...", sig)
+		shutdownAllServices()
+		os.Exit(0)
+	}()
+
 	log.Printf("metalbox dashboard on http://localhost:%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
+}
+
+func shutdownAllServices() {
+	files, err := filepath.Glob(filepath.Join(runDir, "*.pid"))
+	if err != nil {
+		return
+	}
+	for _, pidFile := range files {
+		pidData, err := os.ReadFile(pidFile)
+		if err != nil {
+			continue
+		}
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		name := strings.TrimSuffix(filepath.Base(pidFile), ".pid")
+		if pid > 0 && processAlive(pid) {
+			log.Printf("[%s] shutting down (pid %d)", name, pid)
+			killProcessTree(pid, syscall.SIGTERM)
+		}
+		os.Remove(pidFile)
+	}
+	// Give processes a moment to exit, then force-kill survivors
+	time.Sleep(3 * time.Second)
+	for _, pidFile := range files {
+		pidData, _ := os.ReadFile(pidFile)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if pid > 0 && anyTreeAlive(pid) {
+			name := strings.TrimSuffix(filepath.Base(pidFile), ".pid")
+			log.Printf("[%s] force-killing (pid %d)", name, pid)
+			killProcessTree(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 func restoreRunningServices() {
@@ -375,17 +417,24 @@ func restoreRunningServices() {
 			continue
 		}
 		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
-		if pid > 0 && processAlive(pid) {
-			st := getState(name)
-			st.pid = pid
-			st.guardStop = make(chan struct{})
-			go rssGuard(name, pid, parseBytes(svc.Resources.Memory), svc, st)
-			if svc.Healthcheck != nil {
-				st.healthStop = make(chan struct{})
-				go healthChecker(name, svc, st)
-			}
-			log.Printf("[%s] restored for running process (pid %d)", name, pid)
+		if pid <= 0 || !processAlive(pid) {
+			os.Remove(pidFile)
+			continue
 		}
+		if !processMatchesCommand(pid, svc.Command) {
+			log.Printf("[%s] stale PID %d (different process), cleaning up", name, pid)
+			os.Remove(pidFile)
+			continue
+		}
+		st := getState(name)
+		st.pid = pid
+		st.guardStop = make(chan struct{})
+		go rssGuard(name, pid, parseBytes(svc.Resources.Memory), svc, st)
+		if svc.Healthcheck != nil {
+			st.healthStop = make(chan struct{})
+			go healthChecker(name, svc, st)
+		}
+		log.Printf("[%s] restored for running process (pid %d)", name, pid)
 	}
 }
 
@@ -1129,6 +1178,29 @@ func addEvent(st *serviceState, typ, msg string) {
 
 func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
+}
+
+func processMatchesCommand(pid int, command string) bool {
+	out, err := exec.Command("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return false
+	}
+	cmdLine := strings.TrimSpace(string(out))
+	// Extract the first meaningful token from the expected command for matching
+	parts := strings.Fields(command)
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if strings.HasPrefix(part, "-") {
+			continue
+		}
+		// Match if the running process contains a key part of the expected command
+		if strings.Contains(cmdLine, part) {
+			return true
+		}
+	}
+	return false
 }
 
 // getDescendants returns all descendant PIDs of the given pid (recursive).
