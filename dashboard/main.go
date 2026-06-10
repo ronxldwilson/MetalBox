@@ -777,15 +777,15 @@ func stopService(name string) error {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if pid > 0 {
-		syscall.Kill(-pid, syscall.SIGTERM)
+		killProcessTree(pid, syscall.SIGTERM)
 		for i := 0; i < 10; i++ {
 			time.Sleep(500 * time.Millisecond)
-			if !processAlive(pid) {
+			if !anyTreeAlive(pid) {
 				break
 			}
 		}
-		if processAlive(pid) {
-			syscall.Kill(-pid, syscall.SIGKILL)
+		if anyTreeAlive(pid) {
+			killProcessTree(pid, syscall.SIGKILL)
 		}
 	}
 	os.Remove(pidFile)
@@ -829,17 +829,17 @@ func rssGuard(name string, pid int, memLimit int64, svc ServiceConfig, st *servi
 
 			if rss > memLimit {
 				rssMB := float64(rss) / (1024 * 1024)
-				log.Printf("[%s] RSS %.0fMB > limit %.0fMB — killing pid %d",
+				log.Printf("[%s] memory %.0fMB > limit %.0fMB — killing process tree (pid %d)",
 					name, rssMB, limitMB, pid)
 
 				st.mu.Lock()
-				addEvent(st, "oom-kill", fmt.Sprintf("RSS %.0fMB > limit %.0fMB", rssMB, limitMB))
+				addEvent(st, "oom-kill", fmt.Sprintf("memory %.0fMB > limit %.0fMB", rssMB, limitMB))
 				st.mu.Unlock()
 
-				syscall.Kill(-pid, syscall.SIGTERM)
+				killProcessTree(pid, syscall.SIGTERM)
 				time.Sleep(5 * time.Second)
-				if processAlive(pid) {
-					syscall.Kill(-pid, syscall.SIGKILL)
+				if anyTreeAlive(pid) {
+					killProcessTree(pid, syscall.SIGKILL)
 				}
 				os.Remove(filepath.Join(runDir, name+".pid"))
 				return
@@ -984,17 +984,107 @@ func processAlive(pid int) bool {
 	return syscall.Kill(pid, 0) == nil
 }
 
-func getProcessStats(pid int) (rss int64, cpu float64) {
-	out, err := exec.Command("ps", "-o", "rss=,pcpu=", "-p", strconv.Itoa(pid)).Output()
+// getDescendants returns all descendant PIDs of the given pid (recursive).
+func getDescendants(pid int) []int {
+	var result []int
+	out, err := exec.Command("pgrep", "-P", strconv.Itoa(pid)).Output()
 	if err != nil {
-		return 0, -1
+		return result
 	}
-	fields := strings.Fields(strings.TrimSpace(string(out)))
-	if len(fields) >= 2 {
-		r, _ := strconv.ParseInt(fields[0], 10, 64)
-		rss = r * 1024
-		cpu, _ = strconv.ParseFloat(fields[1], 64)
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if child, err := strconv.Atoi(line); err == nil {
+			result = append(result, child)
+			result = append(result, getDescendants(child)...)
+		}
 	}
+	return result
+}
+
+// killProcessTree kills a process and all its descendants, bottom-up.
+func killProcessTree(pid int, sig syscall.Signal) {
+	descendants := getDescendants(pid)
+	// Kill bottom-up (children first) to prevent orphaning
+	for i := len(descendants) - 1; i >= 0; i-- {
+		syscall.Kill(descendants[i], sig)
+	}
+	syscall.Kill(pid, sig)
+	// Also signal the process group in case any were missed
+	syscall.Kill(-pid, sig)
+}
+
+// anyTreeAlive checks if any process in the tree is still running.
+func anyTreeAlive(pid int) bool {
+	if processAlive(pid) {
+		return true
+	}
+	for _, child := range getDescendants(pid) {
+		if processAlive(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func getProcessStats(pid int) (rss int64, cpu float64) {
+	allPids := append([]int{pid}, getDescendants(pid)...)
+
+	// Try footprint (more accurate than ps RSS — includes compressed pages)
+	pidStrs := make([]string, len(allPids))
+	for i, p := range allPids {
+		pidStrs[i] = strconv.Itoa(p)
+	}
+	fpOut, fpErr := exec.Command("footprint", pidStrs...).Output()
+	if fpErr == nil {
+		// Parse "Summary Footprint: NNN MB" or single "Footprint: NNN MB"
+		for _, line := range strings.Split(string(fpOut), "\n") {
+			line = strings.TrimSpace(line)
+			// Match both "Footprint: 44 MB" and "Summary Footprint: 60 MB"
+			if idx := strings.Index(line, "Footprint:"); idx >= 0 {
+				rest := strings.TrimSpace(line[idx+len("Footprint:"):])
+				// Parse "44 MB" or "1.2 GB" or "800 KB"
+				parts := strings.Fields(rest)
+				if len(parts) >= 2 {
+					val, err := strconv.ParseFloat(parts[0], 64)
+					if err == nil {
+						switch strings.ToUpper(parts[1]) {
+						case "KB":
+							rss = int64(val * 1024)
+						case "MB":
+							rss = int64(val * 1024 * 1024)
+						case "GB":
+							rss = int64(val * 1024 * 1024 * 1024)
+						}
+					}
+				}
+			}
+			// "Summary Footprint" overrides individual ones
+			if strings.HasPrefix(line, "Summary Footprint:") && rss > 0 {
+				break
+			}
+		}
+	}
+
+	// Fallback to ps RSS tree sum if footprint failed or returned 0
+	if rss <= 0 {
+		for _, p := range allPids {
+			psOut, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(p)).Output()
+			if err == nil {
+				r, _ := strconv.ParseInt(strings.TrimSpace(string(psOut)), 10, 64)
+				rss += r * 1024
+			}
+		}
+	}
+
+	// CPU% from ps across all pids in tree
+	for _, p := range allPids {
+		cpuOut, err := exec.Command("ps", "-o", "pcpu=", "-p", strconv.Itoa(p)).Output()
+		if err == nil {
+			c, _ := strconv.ParseFloat(strings.TrimSpace(string(cpuOut)), 64)
+			cpu += c
+		}
+	}
+
 	return
 }
 
