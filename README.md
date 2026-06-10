@@ -13,11 +13,11 @@ MetalBox gives you both: **native Metal performance with container-like resource
 
 ## How it works
 
-MetalBox doesn't use VMs or kernel namespaces (macOS doesn't have them). It's a process supervisor that runs your workload as a native macOS process with enforced resource limits and Docker-like lifecycle management.
+MetalBox is a Go server that runs your workloads as native macOS processes with enforced resource limits, health checks, and a web dashboard for monitoring.
 
 ```
 ┌──────────────────────────────────────┐
-│  metalbox                            │
+│  metalbox-dashboard (Go binary)      │
 │                                      │
 │  ┌────────────┐  ┌────────────────┐  │
 │  │ your app   │  │ resource guard │  │
@@ -25,22 +25,54 @@ MetalBox doesn't use VMs or kernel namespaces (macOS doesn't have them). It's a 
 │  │  macOS     │  │ • Metal mem cap│  │
 │  │  process)  │  │ • CPU policy   │  │
 │  └────────────┘  └────────────────┘  │
-│        │                             │
-│   Metal / MLX / MPS                  │
-│   (direct GPU access)               │
+│        │              │              │
+│   Metal / MLX / MPS   │ health checks│
+│   (direct GPU access) │ log capture  │
+│                       │ auto-restart │
+│  ┌─────────────────────────────────┐ │
+│  │  web dashboard (localhost:9090) │ │
+│  │  start/stop/restart • logs      │ │
+│  │  RSS/CPU graphs • events        │ │
+│  └─────────────────────────────────┘ │
 └──────────────────────────────────────┘
 ```
 
-## Usage
+## Quick start
 
 ```bash
-metalbox up                  # start all services
-metalbox down                # stop all, free resources
+# Build the dashboard server
+cd dashboard
+go build -o metalbox-dashboard .
+
+# Create a metalbox.yml (see Config below)
+# Start the dashboard
+./metalbox-dashboard
+
+# Open http://localhost:9090
+```
+
+## Web dashboard
+
+The dashboard runs on `localhost:9090` and provides:
+
+- **Service overview** — status, PID, RSS, CPU%, memory usage bars
+- **Start / Stop / Restart** buttons per service
+- **Log viewer** with auto-refresh
+- **Event timeline** — starts, stops, OOM kills, health check failures, restarts
+- **Auto-refresh** every 3 seconds
+
+## CLI
+
+A thin Python CLI is also available, talking to the dashboard API:
+
+```bash
+pip install -e .
+
 metalbox ps                  # show services + resource usage
-metalbox logs myapp          # tail logs
-metalbox logs myapp -f       # follow logs
+metalbox start myapp         # start a service
+metalbox stop myapp          # stop a service
 metalbox restart myapp       # restart a service
-metalbox run myapp           # run in foreground (for debugging)
+metalbox logs myapp          # view logs
 ```
 
 ## Config
@@ -80,109 +112,45 @@ services:
 
 | Resource | Mechanism | Hard? |
 |----------|-----------|-------|
-| **Memory (RSS)** | psutil watchdog thread — kills process if RSS exceeds limit, supervisor restarts it | Yes (kill + restart) |
-| **Metal memory** | `mx.metal.set_memory_limit()` — Metal refuses allocations beyond cap | Yes (Metal API) |
-| **Metal cache** | `mx.metal.set_cache_limit()` — bounds compilation/KV cache | Yes (Metal API) |
-| **CPU** | `taskpolicy -b` for background (E-cores only), or default (all cores) | Structural (not %) |
+| **Memory (RSS)** | Go watchdog goroutine polls `ps` every 5s — kills process group if RSS exceeds limit, auto-restarts per policy | Yes (kill + restart) |
+| **Metal memory** | Wrapper injection: auto-generates a Python script calling `mx.metal.set_memory_limit()` before your app imports anything | Yes (Metal API) |
+| **Metal cache** | Same wrapper calls `mx.metal.set_cache_limit()` | Yes (Metal API) |
+| **CPU** | `taskpolicy -b` for background QoS (E-cores only), or default (all cores) | Structural (not %) |
+| **Health checks** | HTTP GET / TCP connect / shell command — restart on consecutive failures | Configurable retries |
 
-macOS has no cgroups. RSS limits (`ulimit -m`) are silently ignored by the kernel. MetalBox enforces memory limits by monitoring from a watchdog thread and killing the process if it exceeds the cap — then the supervisor restarts it. This is the only reliable approach on macOS.
+macOS has no cgroups. RSS limits (`ulimit -m`) are silently ignored by the kernel. MetalBox enforces memory limits by monitoring RSS and killing the process if it exceeds the cap — then auto-restarting per the configured restart policy. This is the only reliable approach on macOS.
 
-## Installation
+### Metal memory injection
 
-```bash
-# from source
-git clone https://github.com/ronxldwilson/metalbox.git
-cd metalbox
-pip install -e .
-
-# or
-brew install metalbox   # (planned)
-```
-
-Requires: macOS 14+ on Apple Silicon. Python 3.10+.
+For Python/MLX workloads, MetalBox auto-generates a wrapper script that calls `mx.metal.set_memory_limit()` and `mx.metal.set_cache_limit()` before your app loads any models. The wrapper is transparent — it detects `python -m module` and `python script.py` patterns (including `uv run python` prefix) and rewrites the command to go through the wrapper first.
 
 ## Architecture
 
 ```
 metalbox/
-├── cli.py              # CLI entry point (click)
-├── config.py           # YAML config parser + validation
-├── supervisor.py       # process lifecycle (start, stop, restart, depends_on)
-├── guard.py            # resource watchdog (RSS monitor, kill on exceed)
-├── metal.py            # Metal memory limit injection (optional, for MLX workloads)
-├── logger.py           # per-service log capture + rotation
-├── healthcheck.py      # HTTP/TCP/CMD health checks
-└── taskpolicy.py       # CPU policy wrapper (taskpolicy -b)
+├── dashboard/
+│   ├── main.go             # Go server — process supervisor, RSS guard,
+│   │                       #   health checks, Metal wrapper, REST API
+│   └── static/
+│       └── index.html      # embedded web dashboard (single file)
+├── metalbox/
+│   ├── __init__.py
+│   └── cli.py              # thin Python CLI (talks to Go server API)
+├── pyproject.toml           # Python CLI package config
+└── metalbox.yml             # your service config (gitignored)
 ```
 
-### Supervisor
+The Go binary is the runtime — it handles everything:
+- Process lifecycle (start, stop, restart, PID files)
+- RSS memory watchdog (kill + restart on exceed)
+- Metal/MLX memory limit injection (auto-generated Python wrapper)
+- CPU policy via `taskpolicy`
+- Health checks (HTTP, TCP, command)
+- Log capture to `~/.metalbox/logs/`
+- Web dashboard + REST API
+- Event tracking (OOM kills, health failures, restarts)
 
-Each service runs as a child process via `subprocess.Popen`. The supervisor:
-
-- Tracks PID, start time, restart count
-- Forwards SIGTERM/SIGINT to children on shutdown
-- Implements restart policies (always, unless-stopped, on-failure, no)
-- Respects `depends_on` ordering for startup
-- Writes PID files to `~/.metalbox/run/<service>.pid`
-
-### Resource guard
-
-A daemon thread per service that polls `psutil.Process.memory_info().rss` every 5 seconds. If RSS exceeds the configured limit:
-
-1. Calls `mx.metal.clear_cache()` (if Metal limits configured)
-2. Rechecks RSS
-3. If still over, sends SIGTERM → waits 5s → SIGKILL
-4. Supervisor restarts per policy
-
-### Metal memory injection
-
-For MLX/Metal workloads, MetalBox can inject memory limits before the app loads models. Two approaches:
-
-1. **Environment variable** — the app reads `METALBOX_METAL_MEMORY` and calls `mx.metal.set_memory_limit()` at startup
-2. **Python wrapper** — MetalBox runs the app via a thin wrapper that sets Metal limits before importing the app module
-
-### Health checks
-
-Supports three modes:
-- `url:` — HTTP GET, expects 2xx
-- `tcp:` — port open check
-- `cmd:` — run a command, check exit code 0
-
-A service is "healthy" after passing `retries` consecutive checks. On failure, the service is restarted.
-
-## Roadmap
-
-### Phase 1 — Process manager with resource limits (MVP)
-- [x] YAML config parsing (`metalbox.yml`)
-- [ ] `metalbox up` / `down` / `ps` / `logs` / `restart`
-- [ ] Process supervisor with restart policies
-- [ ] RSS memory watchdog (psutil-based, kill + restart)
-- [ ] CPU policy via `taskpolicy`
-- [ ] `depends_on` ordering
-- [ ] Health checks (HTTP)
-- [ ] PID file management
-- [ ] Log capture to `~/.metalbox/logs/<service>/`
-- [ ] Env file support + variable substitution
-- [ ] Graceful shutdown (SIGTERM cascade)
-
-### Phase 2 — Metal integration
-- [ ] Metal memory limit injection (`mx.metal.set_memory_limit`)
-- [ ] Metal cache limit injection (`mx.metal.set_cache_limit`)
-- [ ] Metal memory monitoring (`mx.metal.get_active_memory`)
-- [ ] `metalbox stats` — live resource dashboard (RSS, Metal memory, CPU%)
-
-### Phase 3 — Isolation
-- [ ] Environment isolation (clean env, only pass declared vars)
-- [ ] Working directory sandboxing
-- [ ] Network port binding validation (fail-fast on conflicts)
-- [ ] Filesystem: read-only mounts
-
-### Phase 4 — Distribution (future)
-- [ ] `Metalfile` (Dockerfile-like) for building app bundles
-- [ ] OCI image import (extract layers, run natively)
-- [ ] Registry push/pull
-- [ ] Docker-compatible API socket (so Docker Desktop could list services)
-- [ ] Homebrew formula
+The Python CLI is optional — a thin client that calls the REST API for terminal use.
 
 ## Comparison
 
@@ -191,11 +159,18 @@ A service is "healthy" after passing `retries` consecutive checks. On failure, t
 | Metal / MLX / MPS | No | **Yes** | Yes |
 | Memory limits | Hard (cgroups) | Hard (watchdog + kill) | None |
 | CPU limits | Hard (cgroups) | Structural (E-cores) | None |
-| Filesystem isolation | Full | Planned | None |
-| Network isolation | Full | Planned | None |
+| Health checks | Yes | Yes (HTTP/TCP/CMD) | None |
+| Web dashboard | Docker Desktop | Yes (localhost:9090) | None |
 | Lifecycle management | Full | Yes | Manual |
-| Image distribution | Full | Planned | None |
+| Filesystem isolation | Full | No (macOS limitation) | None |
+| Network isolation | Full | No (macOS limitation) | None |
 | Works on Linux | Yes | No (macOS only) | No |
+
+## Requirements
+
+- macOS 14+ on Apple Silicon
+- Go 1.21+ (to build the dashboard)
+- Python 3.10+ (optional, for CLI only)
 
 ## License
 

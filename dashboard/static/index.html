@@ -22,20 +22,14 @@
   .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
   .status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .status-dot.red { background: var(--red); }
-  .status-dot.yellow { background: var(--yellow); }
 
-  .container { max-width: 1100px; margin: 0 auto; padding: 24px 32px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px 32px; }
 
-  .summary {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
-  }
-  .summary-card {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
-  }
+  .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
   .summary-card .label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
   .summary-card .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
   .summary-card .value.green { color: var(--green); }
-  .summary-card .value.red { color: var(--red); }
 
   .services-table {
     width: 100%; border-collapse: collapse; background: var(--surface);
@@ -44,54 +38,71 @@
   .services-table th {
     text-align: left; padding: 12px 16px; font-size: 12px; color: var(--text2);
     text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
-    background: var(--surface);
   }
   .services-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
   .services-table tr:last-child td { border-bottom: none; }
   .services-table tr:hover td { background: rgba(88,166,255,0.04); }
 
-  .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;
-  }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 500; }
   .badge.running { background: rgba(63,185,80,0.15); color: var(--green); }
   .badge.stopped { background: rgba(139,148,158,0.15); color: var(--text2); }
   .badge.dead { background: rgba(248,81,73,0.15); color: var(--red); }
 
-  .bar-bg {
-    width: 120px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
-  }
+  .bar-bg { width: 120px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
   .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
   .bar-fill.ok { background: var(--green); }
   .bar-fill.warn { background: var(--yellow); }
   .bar-fill.danger { background: var(--red); }
 
   .mem-cell { display: flex; align-items: center; gap: 10px; }
-  .mem-text { font-size: 13px; color: var(--text2); min-width: 90px; }
+  .mem-text { font-size: 13px; color: var(--text2); min-width: 100px; }
 
   .actions { display: flex; gap: 6px; }
   .btn {
     padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
-    background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer;
-    transition: all 0.15s;
+    background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer; transition: all 0.15s;
   }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn.danger:hover { border-color: var(--red); color: var(--red); }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
 
-  .log-panel {
+  .panel {
     margin-top: 24px; background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; display: none;
   }
-  .log-header {
+  .panel.open { display: block; }
+  .panel-header {
     padding: 12px 16px; border-bottom: 1px solid var(--border);
     display: flex; justify-content: space-between; align-items: center;
   }
-  .log-header h3 { font-size: 14px; }
-  .log-body {
-    padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
-    color: var(--text2); max-height: 400px; overflow-y: auto; white-space: pre-wrap;
-    line-height: 1.6;
+  .panel-header h3 { font-size: 14px; }
+  .panel-tabs { display: flex; gap: 4px; }
+  .panel-tab {
+    padding: 4px 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    color: var(--text2); background: transparent; border: none;
   }
+  .panel-tab.active { color: var(--text); background: var(--border); }
+  .panel-body {
+    padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
+    color: var(--text2); max-height: 400px; overflow-y: auto; white-space: pre-wrap; line-height: 1.6;
+  }
+
+  .event { padding: 4px 0; display: flex; gap: 12px; }
+  .event-time { color: var(--text2); min-width: 80px; }
+  .event-type { font-weight: 500; min-width: 90px; }
+  .event-type.started { color: var(--green); }
+  .event-type.stopped { color: var(--text2); }
+  .event-type.oom-kill { color: var(--red); }
+  .event-type.restarting { color: var(--yellow); }
+  .event-type.taskpolicy { color: var(--accent); }
+  .event-msg { color: var(--text); }
+
+  .cpu-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 11px;
+  }
+  .cpu-badge.background { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .cpu-badge.default { background: rgba(139,148,158,0.1); color: var(--text2); }
 
   .refresh-info { font-size: 12px; color: var(--text2); }
 </style>
@@ -138,17 +149,26 @@
     <tbody id="svc-body"></tbody>
   </table>
 
-  <div class="log-panel" id="log-panel">
-    <div class="log-header">
-      <h3 id="log-title">Logs</h3>
-      <button class="btn" onclick="closeLog()">Close</button>
+  <div class="panel" id="detail-panel">
+    <div class="panel-header">
+      <h3 id="panel-title">Details</h3>
+      <div style="display:flex;gap:8px;align-items:center">
+        <div class="panel-tabs">
+          <button class="panel-tab active" onclick="switchTab('logs')">Logs</button>
+          <button class="panel-tab" onclick="switchTab('events')">Events</button>
+        </div>
+        <button class="btn" onclick="closePanel()">Close</button>
+      </div>
     </div>
-    <div class="log-body" id="log-body"></div>
+    <div class="panel-body" id="panel-body"></div>
   </div>
 </div>
 
 <script>
 let services = [];
+let activePanel = null;
+let activeTab = 'logs';
+let logRefreshInterval = null;
 
 async function fetchServices() {
   try {
@@ -177,22 +197,28 @@ function render() {
   tbody.innerHTML = services.map(s => {
     const isRunning = s.status === 'running';
     const rss = s.rss_mb ? s.rss_mb.toFixed(0) : '-';
-    const limit = s.limit || '-';
-    const pct = (s.rss_mb && s.limit) ? memPct(s.rss_mb, s.limit) : 0;
+    const limitMB = s.limit_mb ? s.limit_mb.toFixed(0) : null;
+    const limit = limitMB ? limitMB + 'MB' : '-';
+    const pct = (s.rss_mb && s.limit_mb) ? Math.min(100, (s.rss_mb / s.limit_mb) * 100) : 0;
     const barClass = pct > 90 ? 'danger' : pct > 70 ? 'warn' : 'ok';
     const cpu = s.cpu_percent != null ? s.cpu_percent.toFixed(1) + '%' : '-';
+    const cpuMode = s.cpu_mode || 'default';
+    const restartBadge = s.restarts > 0 ? ` <span style="color:var(--yellow);font-size:11px">(${s.restarts}x)</span>` : '';
 
     return `<tr>
-      <td><strong>${s.name}</strong></td>
+      <td><strong>${s.name}</strong>${restartBadge}</td>
       <td><span class="badge ${s.status}">${s.status}</span></td>
       <td style="color:var(--text2)">${s.pid || '-'}</td>
       <td>
         <div class="mem-cell">
-          <div class="mem-text">${rss} / ${limit}</div>
+          <div class="mem-text">${rss}${limitMB ? ' / ' + limit : ''}</div>
           ${pct > 0 ? `<div class="bar-bg"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>` : ''}
         </div>
       </td>
-      <td>${cpu}</td>
+      <td>
+        ${cpu}
+        ${cpuMode !== 'default' && cpuMode ? `<span class="cpu-badge ${cpuMode}">${cpuMode}</span>` : ''}
+      </td>
       <td style="color:var(--text2)">${s.uptime || '-'}</td>
       <td>
         <div class="actions">
@@ -201,57 +227,86 @@ function render() {
                <button class="btn" onclick="svcAction('${s.name}','restart')">Restart</button>`
             : `<button class="btn" onclick="svcAction('${s.name}','start')">Start</button>`
           }
-          <button class="btn" onclick="showLog('${s.name}')">Logs</button>
+          <button class="btn ${activePanel === s.name ? 'active' : ''}" onclick="openPanel('${s.name}')">Details</button>
         </div>
       </td>
     </tr>`;
   }).join('');
 }
 
-function memPct(rssMB, limitStr) {
-  const bytes = parseSize(limitStr);
-  if (!bytes) return 0;
-  return Math.min(100, (rssMB / (bytes / (1024*1024))) * 100);
-}
-
-function parseSize(s) {
-  if (!s || s === '-') return 0;
-  const m = s.match(/^([\d.]+)\s*([kmgtKMGT])/);
-  if (!m) return 0;
-  const n = parseFloat(m[1]);
-  const u = m[2].toLowerCase();
-  const mult = {k:1024, m:1024**2, g:1024**3, t:1024**4};
-  return n * (mult[u] || 1);
-}
-
 async function svcAction(name, action) {
   try {
-    await fetch(`/api/services/${name}/${action}`, { method: 'POST' });
+    const r = await fetch('/api/services/' + name + '/' + action, { method: 'POST' });
+    const data = await r.json();
+    if (data.error) console.error(data.error);
     setTimeout(fetchServices, 500);
   } catch(e) {
     console.error(e);
   }
 }
 
-async function showLog(name) {
-  const panel = document.getElementById('log-panel');
-  const body = document.getElementById('log-body');
-  const title = document.getElementById('log-title');
-  title.textContent = `Logs — ${name}`;
-  body.textContent = 'loading...';
-  panel.style.display = 'block';
+async function openPanel(name) {
+  activePanel = name;
+  activeTab = 'logs';
+  document.getElementById('detail-panel').classList.add('open');
+  document.getElementById('panel-title').textContent = name;
+  updateTabs();
+  await loadPanelContent();
 
-  try {
-    const r = await fetch(`/api/logs/${name}?lines=200`);
-    body.textContent = await r.text();
-    body.scrollTop = body.scrollHeight;
-  } catch {
-    body.textContent = 'failed to load logs';
-  }
+  if (logRefreshInterval) clearInterval(logRefreshInterval);
+  logRefreshInterval = setInterval(loadPanelContent, 3000);
+
+  render();
 }
 
-function closeLog() {
-  document.getElementById('log-panel').style.display = 'none';
+function closePanel() {
+  activePanel = null;
+  document.getElementById('detail-panel').classList.remove('open');
+  if (logRefreshInterval) { clearInterval(logRefreshInterval); logRefreshInterval = null; }
+  render();
+}
+
+function switchTab(tab) {
+  activeTab = tab;
+  updateTabs();
+  loadPanelContent();
+}
+
+function updateTabs() {
+  document.querySelectorAll('.panel-tab').forEach(t => {
+    t.classList.toggle('active', t.textContent.toLowerCase() === activeTab);
+  });
+}
+
+async function loadPanelContent() {
+  if (!activePanel) return;
+  const body = document.getElementById('panel-body');
+
+  if (activeTab === 'logs') {
+    try {
+      const r = await fetch('/api/logs/' + activePanel + '?lines=200');
+      const text = await r.text();
+      const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 50;
+      body.textContent = text || 'no logs yet';
+      if (wasAtBottom) body.scrollTop = body.scrollHeight;
+    } catch {
+      body.textContent = 'failed to load logs';
+    }
+  } else if (activeTab === 'events') {
+    const svc = services.find(s => s.name === activePanel);
+    if (!svc || !svc.events || svc.events.length === 0) {
+      body.innerHTML = '<span style="color:var(--text2)">no events yet</span>';
+      return;
+    }
+    body.innerHTML = svc.events.map(e => {
+      const t = new Date(e.time).toLocaleTimeString();
+      return `<div class="event">
+        <span class="event-time">${t}</span>
+        <span class="event-type ${e.type}">${e.type}</span>
+        <span class="event-msg">${e.message}</span>
+      </div>`;
+    }).join('');
+  }
 }
 
 fetchServices();
