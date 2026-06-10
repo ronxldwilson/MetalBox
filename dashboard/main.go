@@ -37,10 +37,19 @@ type ServiceConfig struct {
 	Command     string            `yaml:"command"`
 	Workdir     string            `yaml:"workdir"`
 	Env         map[string]string `yaml:"env"`
+	EnvInherit  bool              `yaml:"env_inherit"`
+	Ports       []int             `yaml:"ports"`
+	Sandbox     *SandboxConfig    `yaml:"sandbox"`
 	Resources   ResourceConfig    `yaml:"resources"`
 	Restart     string            `yaml:"restart"`
 	Healthcheck *HealthConfig     `yaml:"healthcheck"`
 	DependsOn   []string          `yaml:"depends_on"`
+}
+
+type SandboxConfig struct {
+	ReadOnly  []string `yaml:"read_only"`
+	ReadWrite []string `yaml:"read_write"`
+	AllowNet  bool     `yaml:"allow_net"`
 }
 
 type ResourceConfig struct {
@@ -482,11 +491,15 @@ func startService(name string, svc ServiceConfig) error {
 		workdir = abs
 	}
 
-	env := os.Environ()
-	env = append(env, "PYTHONUNBUFFERED=1")
-	for k, v := range svc.Env {
-		env = append(env, k+"="+v)
+	// Port conflict detection
+	for _, port := range svc.Ports {
+		if err := checkPort(port); err != nil {
+			return fmt.Errorf("port %d: %w", port, err)
+		}
 	}
+
+	// Build environment — clean by default, full inherit opt-in
+	env := buildEnv(svc)
 
 	metalMem := parseBytes(svc.Resources.MetalMemory)
 	metalCache := parseBytes(svc.Resources.MetalCache)
@@ -506,6 +519,16 @@ func startService(name string, svc ServiceConfig) error {
 	// taskpolicy for background CPU
 	if svc.Resources.CPUs == "background" {
 		cmdStr = "taskpolicy -b " + cmdStr
+	}
+
+	// Sandbox wrapping
+	if svc.Sandbox != nil {
+		profile := generateSandboxProfile(svc.Sandbox, workdir, logDir)
+		profilePath := filepath.Join(wrapperDir, name+"_sandbox.sb")
+		os.MkdirAll(wrapperDir, 0755)
+		os.WriteFile(profilePath, []byte(profile), 0644)
+		cmdStr = fmt.Sprintf("sandbox-exec -f %s %s", profilePath, cmdStr)
+		log.Printf("[%s] sandbox profile: %s", name, profilePath)
 	}
 
 	svcLogDir := filepath.Join(logDir, name)
@@ -541,8 +564,17 @@ func startService(name string, svc ServiceConfig) error {
 	if svc.Resources.CPUs == "background" {
 		addEvent(st, "taskpolicy", "pinned to E-cores (background QoS)")
 	}
-	if cmdStr != svc.Command {
+	if cmdStr != svc.Command && (metalMem > 0 || metalCache > 0) {
 		addEvent(st, "metal", fmt.Sprintf("memory=%s cache=%s", svc.Resources.MetalMemory, svc.Resources.MetalCache))
+	}
+	if !svc.EnvInherit {
+		addEvent(st, "isolation", "clean environment (only declared vars)")
+	}
+	if svc.Sandbox != nil {
+		addEvent(st, "sandbox", "filesystem restrictions active")
+	}
+	if len(svc.Ports) > 0 {
+		addEvent(st, "ports", fmt.Sprintf("validated: %v", svc.Ports))
 	}
 	// Stop old goroutines if any
 	if st.guardStop != nil {
@@ -611,6 +643,110 @@ func shouldRestart(policy string, exitCode int, st *serviceState) bool {
 		return exitCode != 0
 	}
 	return false
+}
+
+// --- Environment isolation ---
+
+var minimalEnvKeys = []string{
+	"PATH", "HOME", "USER", "SHELL", "LANG", "TERM",
+	"TMPDIR", "XDG_RUNTIME_DIR", "LC_ALL", "LC_CTYPE",
+}
+
+func buildEnv(svc ServiceConfig) []string {
+	var env []string
+
+	if svc.EnvInherit {
+		env = os.Environ()
+	} else {
+		// Clean env — only essential system vars
+		for _, key := range minimalEnvKeys {
+			if val, ok := os.LookupEnv(key); ok {
+				env = append(env, key+"="+val)
+			}
+		}
+	}
+
+	env = append(env, "PYTHONUNBUFFERED=1")
+
+	for k, v := range svc.Env {
+		env = append(env, k+"="+v)
+	}
+
+	return env
+}
+
+// --- Port conflict detection ---
+
+func checkPort(port int) error {
+	// Check both loopback and wildcard to catch all bindings
+	for _, host := range []string{"127.0.0.1", "0.0.0.0"} {
+		addr := fmt.Sprintf("%s:%d", host, port)
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("already in use (or no permission)")
+		}
+		ln.Close()
+	}
+	return nil
+}
+
+// --- Sandbox (macOS sandbox-exec) ---
+
+func generateSandboxProfile(sb *SandboxConfig, workdir, logDir string) string {
+	// Allow-default model: permit everything, then deny specific things.
+	// deny-default is impractical — Python/Node/Go runtimes need hundreds
+	// of low-level macOS operations (dyld, mach ports, IOKit, etc.)
+	var b strings.Builder
+	b.WriteString("(version 1)\n")
+	b.WriteString("(allow default)\n\n")
+
+	// Deny networking unless explicitly allowed
+	if !sb.AllowNet {
+		b.WriteString("; networking denied\n")
+		b.WriteString("(deny network*)\n\n")
+	}
+
+	// Deny writes to filesystem EXCEPT allowed paths
+	// This is the main isolation: process can read anywhere but only
+	// write to workdir, log dir, tmp, and user-specified paths
+	b.WriteString("; deny file writes everywhere\n")
+	b.WriteString("(deny file-write* (subpath \"/\"))\n\n")
+
+	// Re-allow writes to specific paths
+	b.WriteString("; allow writes to workdir\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n\n", workdir))
+
+	b.WriteString("; allow writes to logs and tmp\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", logDir))
+	b.WriteString("(allow file-write* (subpath \"/private/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/dev\"))\n")
+
+	home, _ := os.UserHomeDir()
+	// Python/uv need write access to cache dirs
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/Library/Caches\"))\n", home))
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/.cache\"))\n", home))
+	b.WriteString("\n")
+
+	// Read-only paths — deny writes explicitly
+	if len(sb.ReadOnly) > 0 {
+		b.WriteString("; user-specified read-only paths (deny writes)\n")
+		for _, p := range sb.ReadOnly {
+			b.WriteString(fmt.Sprintf("(deny file-write* (subpath \"%s\"))\n", p))
+		}
+		b.WriteString("\n")
+	}
+
+	// Extra read-write paths
+	if len(sb.ReadWrite) > 0 {
+		b.WriteString("; user-specified read-write paths\n")
+		for _, p := range sb.ReadWrite {
+			b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", p))
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 func stopService(name string) error {

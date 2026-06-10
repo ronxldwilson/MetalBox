@@ -101,12 +101,25 @@ services:
 
   proxy:
     command: caddy reverse-proxy --from :443 --to :8080
+    ports: [443]                # fail-fast if port already in use
     resources:
       memory: 128m
     restart: always
     depends_on:
       - inference
+    sandbox:                    # filesystem + network isolation (macOS sandbox-exec)
+      allow_net: true           # allow network access (default: false)
+      read_only:                # can read but not write these paths
+        - /etc/config
+      read_write:               # additional writable paths (workdir + /tmp always allowed)
+        - /var/data
 ```
+
+### Environment isolation
+
+By default, services get a **clean environment** — only essential system vars (`PATH`, `HOME`, `USER`, `SHELL`, `LANG`, `TERM`, `TMPDIR`) plus your declared `env:` vars. No inherited `AWS_*`, `GITHUB_*`, `SSH_*`, or other secrets leak in.
+
+To opt into full parent env inheritance, set `env_inherit: true` on a service.
 
 ## How resource limits work
 
@@ -162,8 +175,10 @@ The Python CLI is optional — a thin client that calls the REST API for termina
 | Health checks | Yes | Yes (HTTP/TCP/CMD) | None |
 | Web dashboard | Docker Desktop | Yes (localhost:9090) | None |
 | Lifecycle management | Full | Yes | Manual |
-| Filesystem isolation | Full | No (macOS limitation) | None |
-| Network isolation | Full | No (macOS limitation) | None |
+| Filesystem isolation | Full (namespaces) | Write restrictions (sandbox-exec) | None |
+| Network isolation | Full (namespaces) | Yes (sandbox-exec) | None |
+| Environment isolation | Yes | Yes (clean env by default) | None |
+| Port conflict detection | Yes | Yes (fail-fast) | None |
 | Works on Linux | Yes | No (macOS only) | No |
 
 ## Requirements
