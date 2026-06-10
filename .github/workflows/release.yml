@@ -1,0 +1,79 @@
+name: Release to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: macos-14  # Apple Silicon (M1)
+    permissions:
+      id-token: write  # for trusted publishing
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: pip install hatchling
+
+      - name: Build Go binary
+        run: |
+          cd dashboard
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o ../metalbox/bin/metalbox-dashboard .
+          chmod +x ../metalbox/bin/metalbox-dashboard
+          touch ../metalbox/bin/__init__.py
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set version in pyproject.toml
+        run: |
+          sed -i '' "s/^version = .*/version = \"${{ steps.version.outputs.version }}\"/" pyproject.toml
+
+      - name: Build wheel
+        run: pip wheel . --no-deps -w dist/
+
+      - name: Retag wheel as platform-specific
+        run: |
+          WHEEL=$(ls dist/metalbox-*.whl)
+          VERSION=${{ steps.version.outputs.version }}
+          TAGGED="dist/metalbox-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+
+          python3 -c "
+          import zipfile, os
+
+          src = '$WHEEL'
+          dst = '$TAGGED'
+          tmp = dst + '.tmp'
+
+          with zipfile.ZipFile(src, 'r') as zin, zipfile.ZipFile(tmp, 'w') as zout:
+              for item in zin.infolist():
+                  data = zin.read(item.filename)
+                  if item.filename.endswith('/WHEEL'):
+                      data = data.replace(b'Tag: py3-none-any', b'Tag: py3-none-macosx_14_0_arm64')
+                      data = data.replace(b'Root-Is-Purelib: true', b'Root-Is-Purelib: false')
+                  zout.writestr(item, data)
+
+          os.replace(tmp, dst)
+          if src != dst:
+              os.remove(src)
+          "
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          pip install twine
+          twine upload dist/*.whl
