@@ -29,6 +29,7 @@ var (
 	runDir     string
 	logDir     string
 	wrapperDir string
+	statsDir   string
 )
 
 // --- Config types ---
@@ -85,6 +86,7 @@ type serviceState struct {
 	healthFailures  int
 	manuallyStopped bool
 	events          []serviceEvent
+	history         []HistorySample
 }
 
 type serviceEvent struct {
@@ -125,6 +127,21 @@ type ServiceStatus struct {
 	Restarts int            `json:"restarts"`
 	CPUMode  string         `json:"cpu_mode"`
 	Events   []serviceEvent `json:"events"`
+	GPU      *GPUStats      `json:"gpu,omitempty"`
+	History  []HistorySample `json:"history,omitempty"`
+}
+
+type GPUStats struct {
+	ActiveMB *float64 `json:"active_mb"`
+	PeakMB   *float64 `json:"peak_mb"`
+	CacheMB  *float64 `json:"cache_mb"`
+	LimitMB  *float64 `json:"limit_mb"`
+}
+
+type HistorySample struct {
+	Time  int64   `json:"time"`
+	RSSMB float64 `json:"rss_mb"`
+	CPU   float64 `json:"cpu"`
 }
 
 // --- Size parser ---
@@ -156,6 +173,35 @@ func parseBytes(s string) int64 {
 
 // --- Metal wrapper ---
 
+const metalStatsReporter = `
+import threading, json, os, time
+
+def _metalbox_stats_reporter():
+    stats_file = os.environ.get("METALBOX_STATS_FILE", "")
+    if not stats_file:
+        return
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return
+    os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+    while True:
+        try:
+            stats = {
+                "active": mx.metal.get_active_memory(),
+                "peak": mx.metal.get_peak_memory(),
+                "cache": mx.metal.get_cache_memory(),
+            }
+            with open(stats_file + ".tmp", "w") as f:
+                json.dump(stats, f)
+            os.replace(stats_file + ".tmp", stats_file)
+        except Exception:
+            pass
+        time.sleep(5)
+
+threading.Thread(target=_metalbox_stats_reporter, daemon=True).start()
+`
+
 const metalModuleWrapper = `import os, sys
 
 _metal_memory = %d
@@ -169,7 +215,7 @@ try:
         mx.metal.set_cache_limit(_metal_cache)
 except ImportError:
     pass
-
+` + metalStatsReporter + `
 sys.argv = %s
 from runpy import run_module
 run_module(%q, run_name="__main__")
@@ -188,7 +234,7 @@ try:
         mx.metal.set_cache_limit(_metal_cache)
 except ImportError:
     pass
-
+` + metalStatsReporter + `
 sys.argv = %s
 script = %q
 with open(script) as f:
@@ -257,6 +303,7 @@ func main() {
 	runDir = filepath.Join(home, ".metalbox", "run")
 	logDir = filepath.Join(home, ".metalbox", "logs")
 	wrapperDir = filepath.Join(home, ".metalbox", "wrappers")
+	statsDir = filepath.Join(home, ".metalbox", "stats")
 
 	configPath = "metalbox.yml"
 	if len(os.Args) > 1 {
@@ -373,6 +420,22 @@ func handleServices(w http.ResponseWriter, r *http.Request) {
 					s.CPU = &cpu
 				}
 				s.Uptime = getUptime(pid)
+
+				// GPU stats
+				metalMem := parseBytes(svc.Resources.MetalMemory)
+				s.GPU = readGPUStats(name, metalMem)
+
+				// Record & return history
+				rssMB := float64(0)
+				cpuVal := float64(0)
+				if s.RSS != nil {
+					rssMB = *s.RSS
+				}
+				if s.CPU != nil {
+					cpuVal = *s.CPU
+				}
+				recordHistory(st, rssMB, cpuVal)
+				s.History = st.history
 			} else {
 				s.Status = "dead"
 			}
@@ -515,6 +578,8 @@ func startService(name string, svc ServiceConfig) error {
 	if metalCache > 0 {
 		env = append(env, fmt.Sprintf("METALBOX_METAL_CACHE=%d", metalCache))
 	}
+	os.MkdirAll(statsDir, 0755)
+	env = append(env, fmt.Sprintf("METALBOX_STATS_FILE=%s", filepath.Join(statsDir, name+".json")))
 
 	// Metal wrapper injection
 	cmdStr := metalWrapCommand(svc.Command, metalMem, metalCache, name)
@@ -1094,6 +1159,43 @@ func getUptime(pid int) string {
 		return "-"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func readGPUStats(name string, metalMem int64) *GPUStats {
+	data, err := os.ReadFile(filepath.Join(statsDir, name+".json"))
+	if err != nil {
+		return nil
+	}
+	var raw struct {
+		Active int64 `json:"active"`
+		Peak   int64 `json:"peak"`
+		Cache  int64 `json:"cache"`
+	}
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	active := float64(raw.Active) / (1024 * 1024)
+	peak := float64(raw.Peak) / (1024 * 1024)
+	cache := float64(raw.Cache) / (1024 * 1024)
+	gpu := &GPUStats{ActiveMB: &active, PeakMB: &peak, CacheMB: &cache}
+	if metalMem > 0 {
+		lim := float64(metalMem) / (1024 * 1024)
+		gpu.LimitMB = &lim
+	}
+	return gpu
+}
+
+func recordHistory(st *serviceState, rssMB, cpu float64) {
+	sample := HistorySample{
+		Time:  time.Now().Unix(),
+		RSSMB: rssMB,
+		CPU:   cpu,
+	}
+	st.history = append(st.history, sample)
+	// Keep last 60 samples (~5 min at 5s intervals)
+	if len(st.history) > 60 {
+		st.history = st.history[len(st.history)-60:]
+	}
 }
 
 func httpErr(w http.ResponseWriter, msg string, code int) {

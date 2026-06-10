@@ -109,6 +109,15 @@
   .cpu-badge.default { background: rgba(139,148,158,0.1); color: var(--text2); }
 
   .refresh-info { font-size: 12px; color: var(--text2); }
+
+  .gpu-info { font-size: 12px; color: var(--text2); }
+  .gpu-info strong { color: var(--yellow); font-weight: 500; }
+
+  .sparkline { display: inline-block; vertical-align: middle; }
+  .sparkline svg { display: block; }
+
+  .chart-container { padding: 16px; }
+  .chart-container canvas { width: 100%; height: 120px; }
 </style>
 </head>
 <body>
@@ -145,6 +154,7 @@
         <th>Status</th>
         <th>PID</th>
         <th>Memory</th>
+        <th>GPU</th>
         <th>CPU</th>
         <th>Uptime</th>
         <th>Actions</th>
@@ -209,6 +219,12 @@ function render() {
     const cpuMode = s.cpu_mode || 'default';
     const restartBadge = s.restarts > 0 ? ` <span style="color:var(--yellow);font-size:11px">(${s.restarts}x)</span>` : '';
 
+    const gpuHtml = s.gpu && s.gpu.active_mb != null
+      ? `<span class="gpu-info"><strong>${s.gpu.active_mb.toFixed(0)}MB</strong>${s.gpu.limit_mb ? ' / ' + s.gpu.limit_mb.toFixed(0) + 'MB' : ''}</span>`
+      : '<span style="color:var(--text2)">-</span>';
+
+    const sparkHtml = s.history && s.history.length > 1 ? buildSparkline(s.history.map(h => h.rss_mb), 80, 20) : '';
+
     return `<tr>
       <td><strong>${s.name}</strong>${restartBadge}</td>
       <td><span class="badge ${s.status}">${s.status}</span></td>
@@ -217,8 +233,10 @@ function render() {
         <div class="mem-cell">
           <div class="mem-text">${rss}${limitMB ? ' / ' + limit : ''}</div>
           ${pct > 0 ? `<div class="bar-bg"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>` : ''}
+          ${sparkHtml}
         </div>
       </td>
+      <td>${gpuHtml}</td>
       <td>
         ${cpu}
         ${cpuMode !== 'default' && cpuMode ? `<span class="cpu-badge ${cpuMode}">${cpuMode}</span>` : ''}
@@ -311,6 +329,19 @@ async function loadPanelContent() {
       </div>`;
     }).join('');
   }
+}
+
+function buildSparkline(data, w, h) {
+  if (!data || data.length < 2) return '';
+  const max = Math.max(...data) || 1;
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - (v / max) * (h - 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<span class="sparkline"><svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
+    <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg></span>`;
 }
 
 fetchServices();
