@@ -40,14 +40,14 @@ MetalBox is a Go server that runs your workloads as native macOS processes with 
 ## Quick start
 
 ```bash
-# Build the dashboard server
-cd dashboard
-go build -o metalbox-dashboard .
+# Install from PyPI (macOS Apple Silicon)
+pip install metalbox
 
-# Create a metalbox.yml (see Config below)
-# Start the dashboard
-./metalbox-dashboard
+# Or install with uv
+uv tool install metalbox
 
+# Create a metalbox.yml (see Config below), then:
+metalbox serve
 # Open http://localhost:9090
 ```
 
@@ -66,13 +66,18 @@ The dashboard runs on `localhost:9090` and provides:
 A thin Python CLI is also available, talking to the dashboard API:
 
 ```bash
-pip install -e .
+# Install globally
+pip install metalbox
+# or
+uv tool install metalbox
 
-metalbox ps                  # show services + resource usage
-metalbox start myapp         # start a service
-metalbox stop myapp          # stop a service
-metalbox restart myapp       # restart a service
-metalbox logs myapp          # view logs
+metalbox serve                   # start the dashboard server + web UI
+metalbox serve -d                # start in background (detached)
+metalbox ps                      # show services + resource usage
+metalbox start myapp             # start a service
+metalbox stop myapp              # stop a service
+metalbox restart myapp           # restart a service
+metalbox logs myapp              # view logs
 ```
 
 ## Config
@@ -181,10 +186,26 @@ The Python CLI is optional — a thin client that calls the REST API for termina
 | Port conflict detection | Yes | Yes (fail-fast) | None |
 | Works on Linux | Yes | No (macOS only) | No |
 
+## Installation
+
+```bash
+# From PyPI (recommended — includes pre-built Go binary)
+pip install metalbox
+
+# Or with uv
+uv tool install metalbox
+
+# From source
+git clone https://github.com/ronxldwilson/metalbox.git
+cd metalbox
+./build.sh         # builds Go binary + Python wheel
+pip install dist/*.whl
+```
+
 ## Requirements
 
 - macOS 14+ on Apple Silicon
-- Go 1.21+ (to build the dashboard)
+- Go 1.21+ (only needed if building from source)
 - Python 3.10+ (optional, for CLI only)
 
 ## License

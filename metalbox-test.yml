@@ -1,0 +1,33 @@
+services:
+  ticker:
+    command: >-
+      python3 -c "import time, os; print(f'ticker pid={os.getpid()}'); print('env keys:', sorted(os.environ.keys())); [time.sleep(2) or print(f'tick {i}') for i in range(9999)]"
+    resources:
+      memory: 50m
+    restart: "no"
+
+  web:
+    command: python3 -m http.server 8765
+    ports: [8765]
+    resources:
+      memory: 30m
+    restart: "no"
+    healthcheck:
+      url: http://127.0.0.1:8765/
+      interval: 10
+      timeout: 5
+      retries: 2
+      start_period: 3
+    sandbox:
+      allow_net: true
+      read_write:
+        - /tmp
+
+  sandboxed:
+    command: >-
+      python3 -c "import time, os; print('sandboxed started'); print('can read /tmp:', os.path.exists('/tmp')); [time.sleep(5) or print(f'alive {i}') for i in range(9999)]"
+    resources:
+      memory: 30m
+    restart: "no"
+    sandbox:
+      allow_net: false
