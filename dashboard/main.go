@@ -327,7 +327,7 @@ func main() {
 			log.Fatalf("config error: %s", err)
 		}
 		for name, svc := range cfg.Services {
-			if err := startService(name, svc); err != nil {
+			if err := startServiceWithDeps(name, svc, cfg); err != nil {
 				log.Printf("[%s] failed to start: %s", name, err)
 			}
 		}
@@ -517,7 +517,7 @@ func handleServiceAction(w http.ResponseWriter, r *http.Request) {
 		jsonOK(w, map[string]string{"status": "stopped", "service": name})
 
 	case "start":
-		if err := startService(name, svc); err != nil {
+		if err := startServiceWithDeps(name, svc, cfg); err != nil {
 			httpErr(w, err.Error(), 500)
 			return
 		}
@@ -526,7 +526,7 @@ func handleServiceAction(w http.ResponseWriter, r *http.Request) {
 	case "restart":
 		stopService(name)
 		time.Sleep(500 * time.Millisecond)
-		if err := startService(name, svc); err != nil {
+		if err := startServiceWithDeps(name, svc, cfg); err != nil {
 			httpErr(w, err.Error(), 500)
 			return
 		}
@@ -569,6 +569,55 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 // --- Service lifecycle ---
+
+func startServiceWithDeps(name string, svc ServiceConfig, cfg *Config) error {
+	for _, dep := range svc.DependsOn {
+		depSvc, ok := cfg.Services[dep]
+		if !ok {
+			return fmt.Errorf("dependency %q not found in config", dep)
+		}
+
+		// Start dependency if not running
+		pidFile := filepath.Join(runDir, dep+".pid")
+		pidData, _ := os.ReadFile(pidFile)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		if pid <= 0 || !processAlive(pid) {
+			if err := startServiceWithDeps(dep, depSvc, cfg); err != nil {
+				return fmt.Errorf("dependency %q failed to start: %w", dep, err)
+			}
+		}
+
+		// Wait for dependency to be healthy (if it has a healthcheck)
+		if depSvc.Healthcheck != nil {
+			depSt := getState(dep)
+			startPeriod := depSvc.Healthcheck.StartPeriod
+			if startPeriod <= 0 {
+				startPeriod = 60
+			}
+			deadline := time.Now().Add(time.Duration(startPeriod) * time.Second)
+			log.Printf("[%s] waiting for dependency %q to be healthy...", name, dep)
+
+			for time.Now().Before(deadline) {
+				depSt.mu.Lock()
+				h := depSt.healthy
+				depSt.mu.Unlock()
+				if h != nil && *h {
+					break
+				}
+				time.Sleep(2 * time.Second)
+			}
+
+			depSt.mu.Lock()
+			h := depSt.healthy
+			depSt.mu.Unlock()
+			if h == nil || !*h {
+				return fmt.Errorf("dependency %q not healthy within %ds", dep, startPeriod)
+			}
+			log.Printf("[%s] dependency %q is healthy", name, dep)
+		}
+	}
+	return startService(name, svc)
+}
 
 func startService(name string, svc ServiceConfig) error {
 	os.MkdirAll(runDir, 0755)
