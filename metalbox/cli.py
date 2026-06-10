@@ -219,5 +219,31 @@ def stats(config, do_watch):
         _render()
 
 
+@main.command()
+@click.option("-f", "--file", "config", default="metalbox.yml", help="Config file")
+@click.option("-p", "--port", default="9090", help="Dashboard port")
+def serve(config, port):
+    """Start the web dashboard."""
+    import shutil, subprocess, os
+    from pathlib import Path
+
+    dashboard_bin = shutil.which("metalbox-dashboard")
+    if not dashboard_bin:
+        pkg_dir = Path(__file__).parent.parent / "dashboard" / "metalbox-dashboard"
+        if pkg_dir.exists():
+            dashboard_bin = str(pkg_dir)
+    if not dashboard_bin:
+        click.echo("metalbox-dashboard binary not found — build it with:", err=True)
+        click.echo("  cd dashboard && go build -o metalbox-dashboard .", err=True)
+        sys.exit(1)
+
+    env = {**os.environ, "METALBOX_CONFIG": str(Path(config).resolve()), "METALBOX_PORT": port}
+    click.echo(f"starting dashboard on http://localhost:{port}")
+    try:
+        subprocess.run([dashboard_bin], env=env)
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     main()

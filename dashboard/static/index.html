@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MetalBox</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text2: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922; --orange: #db6d28;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif; }
+
+  .header {
+    padding: 20px 32px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; }
+  .header h1 span { color: var(--text2); font-weight: 400; font-size: 14px; margin-left: 8px; }
+  .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+  .status-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .status-dot.red { background: var(--red); }
+  .status-dot.yellow { background: var(--yellow); }
+
+  .container { max-width: 1100px; margin: 0 auto; padding: 24px 32px; }
+
+  .summary {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px;
+  }
+  .summary-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px;
+  }
+  .summary-card .label { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+  .summary-card .value { font-size: 28px; font-weight: 600; margin-top: 4px; }
+  .summary-card .value.green { color: var(--green); }
+  .summary-card .value.red { color: var(--red); }
+
+  .services-table {
+    width: 100%; border-collapse: collapse; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  }
+  .services-table th {
+    text-align: left; padding: 12px 16px; font-size: 12px; color: var(--text2);
+    text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .services-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .services-table tr:last-child td { border-bottom: none; }
+  .services-table tr:hover td { background: rgba(88,166,255,0.04); }
+
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 500;
+  }
+  .badge.running { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge.stopped { background: rgba(139,148,158,0.15); color: var(--text2); }
+  .badge.dead { background: rgba(248,81,73,0.15); color: var(--red); }
+
+  .bar-bg {
+    width: 120px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+  .bar-fill.ok { background: var(--green); }
+  .bar-fill.warn { background: var(--yellow); }
+  .bar-fill.danger { background: var(--red); }
+
+  .mem-cell { display: flex; align-items: center; gap: 10px; }
+  .mem-text { font-size: 13px; color: var(--text2); min-width: 90px; }
+
+  .actions { display: flex; gap: 6px; }
+  .btn {
+    padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface); color: var(--text); font-size: 12px; cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .log-panel {
+    margin-top: 24px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; display: none;
+  }
+  .log-header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .log-header h3 { font-size: 14px; }
+  .log-body {
+    padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px;
+    color: var(--text2); max-height: 400px; overflow-y: auto; white-space: pre-wrap;
+    line-height: 1.6;
+  }
+
+  .refresh-info { font-size: 12px; color: var(--text2); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1><span class="status-dot green" id="conn-dot"></span>MetalBox<span>Dashboard</span></h1>
+  <div class="refresh-info">auto-refresh 3s</div>
+</div>
+
+<div class="container">
+  <div class="summary">
+    <div class="summary-card">
+      <div class="label">Services</div>
+      <div class="value" id="s-total">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Running</div>
+      <div class="value green" id="s-running">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Stopped</div>
+      <div class="value" id="s-stopped">-</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Total RSS</div>
+      <div class="value" id="s-rss">-</div>
+    </div>
+  </div>
+
+  <table class="services-table">
+    <thead>
+      <tr>
+        <th>Service</th>
+        <th>Status</th>
+        <th>PID</th>
+        <th>Memory</th>
+        <th>CPU</th>
+        <th>Uptime</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="svc-body"></tbody>
+  </table>
+
+  <div class="log-panel" id="log-panel">
+    <div class="log-header">
+      <h3 id="log-title">Logs</h3>
+      <button class="btn" onclick="closeLog()">Close</button>
+    </div>
+    <div class="log-body" id="log-body"></div>
+  </div>
+</div>
+
+<script>
+let services = [];
+
+async function fetchServices() {
+  try {
+    const r = await fetch('/api/services');
+    services = await r.json();
+    if (!services) services = [];
+    render();
+    document.getElementById('conn-dot').className = 'status-dot green';
+  } catch {
+    document.getElementById('conn-dot').className = 'status-dot red';
+  }
+}
+
+function render() {
+  const total = services.length;
+  const running = services.filter(s => s.status === 'running').length;
+  const stopped = total - running;
+  const totalRSS = services.reduce((a, s) => a + (s.rss_mb || 0), 0);
+
+  document.getElementById('s-total').textContent = total;
+  document.getElementById('s-running').textContent = running;
+  document.getElementById('s-stopped').textContent = stopped;
+  document.getElementById('s-rss').textContent = totalRSS > 0 ? Math.round(totalRSS) + ' MB' : '-';
+
+  const tbody = document.getElementById('svc-body');
+  tbody.innerHTML = services.map(s => {
+    const isRunning = s.status === 'running';
+    const rss = s.rss_mb ? s.rss_mb.toFixed(0) : '-';
+    const limit = s.limit || '-';
+    const pct = (s.rss_mb && s.limit) ? memPct(s.rss_mb, s.limit) : 0;
+    const barClass = pct > 90 ? 'danger' : pct > 70 ? 'warn' : 'ok';
+    const cpu = s.cpu_percent != null ? s.cpu_percent.toFixed(1) + '%' : '-';
+
+    return `<tr>
+      <td><strong>${s.name}</strong></td>
+      <td><span class="badge ${s.status}">${s.status}</span></td>
+      <td style="color:var(--text2)">${s.pid || '-'}</td>
+      <td>
+        <div class="mem-cell">
+          <div class="mem-text">${rss} / ${limit}</div>
+          ${pct > 0 ? `<div class="bar-bg"><div class="bar-fill ${barClass}" style="width:${pct}%"></div></div>` : ''}
+        </div>
+      </td>
+      <td>${cpu}</td>
+      <td style="color:var(--text2)">${s.uptime || '-'}</td>
+      <td>
+        <div class="actions">
+          ${isRunning
+            ? `<button class="btn danger" onclick="svcAction('${s.name}','stop')">Stop</button>
+               <button class="btn" onclick="svcAction('${s.name}','restart')">Restart</button>`
+            : `<button class="btn" onclick="svcAction('${s.name}','start')">Start</button>`
+          }
+          <button class="btn" onclick="showLog('${s.name}')">Logs</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function memPct(rssMB, limitStr) {
+  const bytes = parseSize(limitStr);
+  if (!bytes) return 0;
+  return Math.min(100, (rssMB / (bytes / (1024*1024))) * 100);
+}
+
+function parseSize(s) {
+  if (!s || s === '-') return 0;
+  const m = s.match(/^([\d.]+)\s*([kmgtKMGT])/);
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  const u = m[2].toLowerCase();
+  const mult = {k:1024, m:1024**2, g:1024**3, t:1024**4};
+  return n * (mult[u] || 1);
+}
+
+async function svcAction(name, action) {
+  try {
+    await fetch(`/api/services/${name}/${action}`, { method: 'POST' });
+    setTimeout(fetchServices, 500);
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+async function showLog(name) {
+  const panel = document.getElementById('log-panel');
+  const body = document.getElementById('log-body');
+  const title = document.getElementById('log-title');
+  title.textContent = `Logs — ${name}`;
+  body.textContent = 'loading...';
+  panel.style.display = 'block';
+
+  try {
+    const r = await fetch(`/api/logs/${name}?lines=200`);
+    body.textContent = await r.text();
+    body.scrollTop = body.scrollHeight;
+  } catch {
+    body.textContent = 'failed to load logs';
+  }
+}
+
+function closeLog() {
+  document.getElementById('log-panel').style.display = 'none';
+}
+
+fetchServices();
+setInterval(fetchServices, 3000);
+</script>
+</body>
+</html>

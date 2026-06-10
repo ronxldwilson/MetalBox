@@ -8,3 +8,4 @@ build/
 .env
 metalbox.yml
 test.yml
+dashboard/metalbox-dashboard
