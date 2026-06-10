@@ -162,5 +162,70 @@ def logs(ctx, service, lines):
     click.echo(text)
 
 
+@main.command()
+@click.argument("command", nargs=-1, required=True)
+@click.option("--memory", "-m", default=None, help="RSS memory limit (e.g. 2g, 512m)")
+@click.option("--metal-memory", default=None, help="Metal GPU memory limit")
+@click.option("--metal-cache", default=None, help="Metal cache limit")
+@click.option("--cpus", default="default", help="CPU policy: default or background")
+@click.option("--name", default=None, help="Service name (default: derived from command)")
+def run(command, memory, metal_memory, metal_cache, cpus, name):
+    """Run a one-shot command with resource limits (no server needed).
+
+    \b
+    Examples:
+      metalbox run --memory 2g "python train.py"
+      metalbox run --memory 512m --metal-memory 1g "python -m uvicorn app:app"
+      metalbox run --cpus background "python bench.py"
+    """
+    import tempfile
+
+    cmd_str = " ".join(command)
+    svc_name = name or "run-" + cmd_str.split()[0].split("/")[-1].replace(".", "-")[:20]
+
+    # Build YAML manually to avoid pyyaml dependency
+    lines = ["services:", f"  {svc_name}:", f"    command: {cmd_str}", f"    workdir: {os.getcwd()}", '    restart: "no"', "    resources:"]
+    if memory:
+        lines.append(f"      memory: {memory}")
+    if metal_memory:
+        lines.append(f"      metal_memory: {metal_memory}")
+    if metal_cache:
+        lines.append(f"      metal_cache: {metal_cache}")
+    if cpus != "default":
+        lines.append(f"      cpus: {cpus}")
+
+    binary = _find_dashboard()
+    if not binary:
+        click.echo("error: metalbox-dashboard binary not found", err=True)
+        sys.exit(1)
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False, prefix="metalbox-run-") as f:
+        f.write("\n".join(lines) + "\n")
+        tmp_config = f.name
+
+    limits = []
+    if memory:
+        limits.append(f"mem={memory}")
+    if metal_memory:
+        limits.append(f"metal={metal_memory}")
+    if cpus != "default":
+        limits.append(f"cpus={cpus}")
+    click.echo(f"metalbox run: {cmd_str}" + (f" [{', '.join(limits)}]" if limits else ""))
+
+    env = {**os.environ, "METALBOX_CONFIG": tmp_config, "METALBOX_PORT": "0"}
+
+    try:
+        proc = subprocess.Popen([binary], env=env)
+        # Give it time to start the service
+        import time
+        time.sleep(1)
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        proc.wait()
+    finally:
+        os.unlink(tmp_config)
+
+
 if __name__ == "__main__":
     main()

@@ -320,6 +320,38 @@ func main() {
 
 	restoreRunningServices()
 
+	// Port "0" = run mode: auto-start all services, no HTTP server
+	if port == "0" {
+		cfg, err := loadConfig()
+		if err != nil {
+			log.Fatalf("config error: %s", err)
+		}
+		for name, svc := range cfg.Services {
+			if err := startService(name, svc); err != nil {
+				log.Printf("[%s] failed to start: %s", name, err)
+			}
+		}
+		// Wait for all services to exit
+		for {
+			time.Sleep(1 * time.Second)
+			allDone := true
+			for name := range cfg.Services {
+				pidFile := filepath.Join(runDir, name+".pid")
+				if pidData, err := os.ReadFile(pidFile); err == nil {
+					pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
+					if pid > 0 && processAlive(pid) {
+						allDone = false
+						break
+					}
+				}
+			}
+			if allDone {
+				break
+			}
+		}
+		return
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/services", handleServices)
 	mux.HandleFunc("/api/services/", handleServiceAction)
