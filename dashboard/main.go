@@ -83,6 +83,7 @@ type serviceState struct {
 	healthStop      chan struct{}
 	healthy         *bool
 	healthFailures  int
+	manuallyStopped bool
 	events          []serviceEvent
 }
 
@@ -477,6 +478,11 @@ func handleLogs(w http.ResponseWriter, r *http.Request) {
 func startService(name string, svc ServiceConfig) error {
 	os.MkdirAll(runDir, 0755)
 
+	st := getState(name)
+	st.mu.Lock()
+	st.manuallyStopped = false
+	st.mu.Unlock()
+
 	pidFile := filepath.Join(runDir, name+".pid")
 	if pidData, err := os.ReadFile(pidFile); err == nil {
 		pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
@@ -556,7 +562,6 @@ func startService(name string, svc ServiceConfig) error {
 	pid := cmd.Process.Pid
 	os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644)
 
-	st := getState(name)
 	st.mu.Lock()
 	st.pid = pid
 	st.healthy = nil
@@ -634,6 +639,9 @@ func startService(name string, svc ServiceConfig) error {
 func shouldRestart(policy string, exitCode int, st *serviceState) bool {
 	st.mu.Lock()
 	defer st.mu.Unlock()
+	if st.manuallyStopped {
+		return false
+	}
 	switch policy {
 	case "always":
 		return true
@@ -783,6 +791,7 @@ func stopService(name string) error {
 	os.Remove(pidFile)
 
 	st.mu.Lock()
+	st.manuallyStopped = true
 	addEvent(st, "stopped", "user stopped")
 	st.pid = 0
 	st.healthy = nil
