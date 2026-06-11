@@ -1,6 +1,6 @@
 [project]
 name = "metalbox"
-version = "0.3.0"
+version = "0.4.0"
 description = "Lightweight process containerization for macOS Apple Silicon with Metal/MLX support"
 readme = "README.md"
 requires-python = ">=3.10"
