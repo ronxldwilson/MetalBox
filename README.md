@@ -4,6 +4,17 @@
   <img src="assets/logo.svg" alt="MetalBox" width="400"/>
 </p>
 
+<p align="center">
+  <a href="https://pypi.org/project/metalbox/"><img src="https://img.shields.io/pypi/v/metalbox?color=blue&label=pypi" alt="PyPI"></a>
+  <a href="https://pypi.org/project/metalbox/"><img src="https://img.shields.io/pypi/pyversions/metalbox" alt="Python"></a>
+  <a href="https://github.com/ronxldwilson/MetalBox/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ronxldwilson/MetalBox" alt="License"></a>
+  <a href="https://github.com/ronxldwilson/MetalBox"><img src="https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey" alt="Platform"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quickstart</a> · <a href="#web-dashboard">Dashboard</a> · <a href="#interactive-tui">TUI</a> · <a href="#cli">CLI</a> · <a href="#config">Config</a> · <a href="#how-resource-limits-work">How it works</a>
+</p>
+
 Lightweight process containerization for macOS Apple Silicon. Run ML workloads with Metal/MLX acceleration and Docker-like resource limits — without a Linux VM.
 
 ## The problem
