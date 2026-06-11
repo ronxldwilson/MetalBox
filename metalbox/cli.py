@@ -76,6 +76,7 @@ Run ML workloads with Metal/MLX GPU access and Docker-like resource limits.
 \b
 Quick start:
   metalbox serve                         Start dashboard + web UI
+  metalbox down                          Stop everything and exit
   metalbox top                           Interactive TUI (like lazydocker)
   metalbox run --memory 2g "python x.py" One-shot with limits
 """
@@ -117,6 +118,50 @@ def serve(config, port, detach):
         subprocess.run([binary], env=env)
     except KeyboardInterrupt:
         pass
+
+
+@main.command()
+@click.pass_context
+def down(ctx):
+    """Stop all services and shut down the dashboard server."""
+    import time as _time
+
+    port = ctx.obj["port"]
+    pid_file = Path.home() / ".metalbox" / "run" / "dashboard.pid"
+
+    # Check if server is reachable (without _api's sys.exit behavior)
+    url = BASE.format(port=port) + "/api/shutdown"
+    req = urllib.request.Request(url, data=b"", method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=5)
+        body = resp.read()
+        if b'"ok"' not in body:
+            raise urllib.error.URLError("not a metalbox server")
+        # Wait for the server to actually exit
+        for _ in range(10):
+            _time.sleep(0.3)
+            try:
+                urllib.request.urlopen(
+                    urllib.request.Request(BASE.format(port=port) + "/api/services"),
+                    timeout=2,
+                )
+            except (urllib.error.URLError, ConnectionError):
+                break
+        pid_file.unlink(missing_ok=True)
+        click.echo("metalbox stopped")
+    except (urllib.error.URLError, ConnectionError):
+        # Server not reachable — try PID file fallback
+        if pid_file.exists():
+            import signal as _signal
+            pid = int(pid_file.read_text().strip())
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                click.echo(f"sent SIGTERM to dashboard (pid {pid})")
+            except ProcessLookupError:
+                click.echo("dashboard not running (stale pid file cleaned up)")
+            pid_file.unlink(missing_ok=True)
+        else:
+            click.echo("metalbox is not running")
 
 
 @main.command()

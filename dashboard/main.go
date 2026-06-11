@@ -376,10 +376,29 @@ func main() {
 		return
 	}
 
+	// Write dashboard PID file so `metalbox down` can find us
+	dashPidFile := filepath.Join(runDir, "dashboard.pid")
+	os.WriteFile(dashPidFile, []byte(strconv.Itoa(os.Getpid())), 0644)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/services", handleServices)
 	mux.HandleFunc("/api/services/", handleServiceAction)
 	mux.HandleFunc("/api/logs/", handleLogs)
+	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", 405)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"ok":true}`))
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			log.Printf("shutdown requested via API, stopping all services...")
+			shutdownAllServices()
+			os.Remove(dashPidFile)
+			os.Exit(0)
+		}()
+	})
 	mux.HandleFunc("/", handleIndex)
 
 	// Graceful shutdown: kill all managed processes on SIGINT/SIGTERM
@@ -389,6 +408,7 @@ func main() {
 		sig := <-sigCh
 		log.Printf("received %s, shutting down managed processes...", sig)
 		shutdownAllServices()
+		os.Remove(dashPidFile)
 		os.Exit(0)
 	}()
 
