@@ -40,9 +40,10 @@ services:
 
   sandboxed:
     command: >-
-      python3 -c "import time, os; print('sandboxed started'); print('can read /tmp:', os.path.exists('/tmp')); [time.sleep(5) or print(f'alive {i}') for i in range(9999)]"
+      python3 -c "import time, os; print('sandboxed started'); print('can read /tmp:', os.path.exists('/tmp')); print('can read ~/.ssh:', os.path.exists(os.path.expanduser('~/.ssh'))); [time.sleep(5) or print(f'alive {i}') for i in range(9999)]"
     resources:
       memory: 30m
     restart: "no"
     sandbox:
+      preset: python
       allow_net: false

@@ -49,9 +49,21 @@ type ServiceConfig struct {
 }
 
 type SandboxConfig struct {
+	// Preset runtime profile: "python", "node", "binary", or empty for custom
+	Preset string `yaml:"preset"`
+	// Strict mode: deny-default (like Docker). Default is allow-default.
+	Strict bool `yaml:"strict"`
+	// Filesystem
 	ReadOnly  []string `yaml:"read_only"`
 	ReadWrite []string `yaml:"read_write"`
-	AllowNet  bool     `yaml:"allow_net"`
+	DenyPaths []string `yaml:"deny_paths"`
+	// Networking
+	AllowNet      bool `yaml:"allow_net"`
+	LocalhostOnly bool `yaml:"localhost_only"`
+	// Process restrictions
+	DenyExec bool `yaml:"deny_exec"`
+	// IPC restrictions
+	DenyIPC bool `yaml:"deny_ipc"`
 }
 
 type ResourceConfig struct {
@@ -920,45 +932,54 @@ func checkPort(port int) error {
 // --- Sandbox (macOS sandbox-exec) ---
 
 func generateSandboxProfile(sb *SandboxConfig, workdir, logDir string) string {
-	// Allow-default model: permit everything, then deny specific things.
-	// deny-default is impractical — Python/Node/Go runtimes need hundreds
-	// of low-level macOS operations (dyld, mach ports, IOKit, etc.)
-	var b strings.Builder
-	b.WriteString("(version 1)\n")
-	b.WriteString("(allow default)\n\n")
+	home, _ := os.UserHomeDir()
+	strict := sb.Strict || sb.Preset != ""
 
-	// Deny networking unless explicitly allowed
-	if !sb.AllowNet {
-		b.WriteString("; networking denied\n")
-		b.WriteString("(deny network*)\n\n")
+	var b strings.Builder
+	b.WriteString("(version 1)\n\n")
+
+	if strict {
+		b.WriteString("; ── deny-default (Docker-like isolation) ──\n")
+		b.WriteString("(deny default)\n\n")
+		writeStrictBase(&b, home, workdir, logDir)
+		if sb.Preset != "" {
+			writePreset(&b, sb.Preset, home)
+		}
+	} else {
+		b.WriteString("; ── allow-default (permissive) ──\n")
+		b.WriteString("(allow default)\n\n")
+		writePermissiveFS(&b, workdir, logDir, home)
 	}
 
-	// Deny writes to filesystem EXCEPT allowed paths
-	// This is the main isolation: process can read anywhere but only
-	// write to workdir, log dir, tmp, and user-specified paths
-	b.WriteString("; deny file writes everywhere\n")
-	b.WriteString("(deny file-write* (subpath \"/\"))\n\n")
+	// Deny reads from sensitive paths
+	sensitivePaths := sb.DenyPaths
+	if strict && len(sensitivePaths) == 0 {
+		sensitivePaths = []string{
+			home + "/.ssh",
+			home + "/.gnupg",
+			home + "/.aws",
+			home + "/.azure",
+			home + "/.config/gcloud",
+			home + "/.docker",
+			home + "/.kube",
+			home + "/.npmrc",
+			home + "/.pypirc",
+			home + "/.netrc",
+		}
+	}
+	if len(sensitivePaths) > 0 {
+		b.WriteString("; ── deny access to sensitive paths ──\n")
+		for _, p := range sensitivePaths {
+			b.WriteString(fmt.Sprintf("(deny file-read* file-write* (subpath \"%s\"))\n", p))
+		}
+		b.WriteString("\n")
+	}
 
-	// Re-allow writes to specific paths
-	b.WriteString("; allow writes to workdir\n")
-	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n\n", workdir))
-
-	b.WriteString("; allow writes to logs and tmp\n")
-	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", logDir))
-	b.WriteString("(allow file-write* (subpath \"/private/tmp\"))\n")
-	b.WriteString("(allow file-write* (subpath \"/tmp\"))\n")
-	b.WriteString("(allow file-write* (subpath \"/dev\"))\n")
-
-	home, _ := os.UserHomeDir()
-	// Python/uv need write access to cache dirs
-	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/Library/Caches\"))\n", home))
-	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/.cache\"))\n", home))
-	b.WriteString("\n")
-
-	// Read-only paths — deny writes explicitly
+	// Read-only paths
 	if len(sb.ReadOnly) > 0 {
-		b.WriteString("; user-specified read-only paths (deny writes)\n")
+		b.WriteString("; ── user read-only paths ──\n")
 		for _, p := range sb.ReadOnly {
+			b.WriteString(fmt.Sprintf("(allow file-read* (subpath \"%s\"))\n", p))
 			b.WriteString(fmt.Sprintf("(deny file-write* (subpath \"%s\"))\n", p))
 		}
 		b.WriteString("\n")
@@ -966,14 +987,154 @@ func generateSandboxProfile(sb *SandboxConfig, workdir, logDir string) string {
 
 	// Extra read-write paths
 	if len(sb.ReadWrite) > 0 {
-		b.WriteString("; user-specified read-write paths\n")
+		b.WriteString("; ── user read-write paths ──\n")
 		for _, p := range sb.ReadWrite {
-			b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", p))
+			b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s\"))\n", p))
 		}
 		b.WriteString("\n")
 	}
 
+	// Networking
+	writeNetworkRules(&b, sb)
+
+	// Process execution restrictions
+	if sb.DenyExec {
+		b.WriteString("; ── deny spawning new processes ──\n")
+		b.WriteString("(deny process-exec)\n")
+		// Re-allow the service's own interpreter
+		b.WriteString("(allow process-exec (subpath \"/usr\"))\n")
+		b.WriteString("(allow process-exec (subpath \"/bin\"))\n")
+		b.WriteString("(allow process-exec (subpath \"/opt/homebrew\"))\n")
+		b.WriteString("(allow process-exec (subpath \"/usr/local\"))\n")
+		b.WriteString(fmt.Sprintf("(allow process-exec (subpath \"%s\"))\n", workdir))
+		b.WriteString("\n")
+	}
+
+	// IPC restrictions
+	if sb.DenyIPC || strict {
+		b.WriteString("; ── IPC restrictions ──\n")
+		b.WriteString("(deny ipc-posix-shm-write* ipc-posix-shm-read-data)\n")
+		b.WriteString("(allow ipc-posix-shm-read* ipc-posix-shm-write*\n")
+		b.WriteString("  (ipc-posix-name-regex #\"^apple\\.shm\\.\")\n")
+		b.WriteString("  (ipc-posix-name-regex #\"^com\\.apple\\.\")\n")
+		b.WriteString("  (ipc-posix-name-regex #\"^/tmp/com\\.apple\\.\")\n")
+		b.WriteString("  (ipc-posix-name-regex #\"^CFPBS:\")\n")
+		b.WriteString("  (ipc-posix-name-regex #\"^/FSEvents\")\n")
+		b.WriteString(")\n")
+		b.WriteString("\n")
+	}
+
 	return b.String()
+}
+
+// writeStrictBase writes the core allow-list for deny-default mode.
+// macOS requires broad file-read access (dyld cache, frameworks, etc.) so
+// isolation comes from write restrictions, sensitive path denials, network
+// controls, and IPC limits — matching how Apple's own App Sandbox works.
+func writeStrictBase(b *strings.Builder, home, workdir, logDir string) {
+	b.WriteString("; ── core OS operations ──\n")
+	b.WriteString("(allow process-fork process-exec)\n")
+	b.WriteString("(allow signal (target self))\n")
+	b.WriteString("(allow sysctl-read)\n")
+	b.WriteString("(allow mach-lookup)\n")
+	b.WriteString("(allow mach-register)\n")
+	b.WriteString("(allow iokit-open)\n")
+	b.WriteString("(allow system-socket)\n")
+	b.WriteString("(allow process-info-pidinfo process-info-setcontrol)\n")
+	b.WriteString("(allow process-info* (target self))\n")
+	b.WriteString("\n")
+
+	b.WriteString("; ── filesystem reads: broad (needed for dyld, frameworks, runtimes) ──\n")
+	b.WriteString("(allow file-read*)\n")
+	b.WriteString("\n")
+
+	b.WriteString("; ── filesystem writes: deny everything, then allow specific paths ──\n")
+	b.WriteString("(deny file-write* (subpath \"/\"))\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", workdir))
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", logDir))
+	b.WriteString("(allow file-write* (subpath \"/private/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/dev\"))\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/Library/Caches\"))\n", home))
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/.cache\"))\n", home))
+	b.WriteString("\n")
+}
+
+// writePreset adds runtime-specific allow rules for deny-default mode.
+func writePreset(b *strings.Builder, preset, home string) {
+	switch preset {
+	case "python":
+		b.WriteString("; ── python runtime preset ──\n")
+		b.WriteString("(allow file-read*\n")
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.local\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.pyenv\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.virtualenvs\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.venv\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.conda\")\n", home))
+		b.WriteString(")\n")
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.local/share/uv\"))\n", home))
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.local/share/pip\"))\n", home))
+		// MLX / Metal model caches
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.cache/huggingface\"))\n", home))
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.cache/mlx\"))\n", home))
+		b.WriteString("\n")
+
+	case "node":
+		b.WriteString("; ── node runtime preset ──\n")
+		b.WriteString("(allow file-read*\n")
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.nvm\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.npm\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.yarn\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.pnpm\")\n", home))
+		b.WriteString(fmt.Sprintf("  (subpath \"%s/.node_modules\")\n", home))
+		b.WriteString(")\n")
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.npm\"))\n", home))
+		b.WriteString(fmt.Sprintf("(allow file-read* file-write* (subpath \"%s/.yarn\"))\n", home))
+		b.WriteString("\n")
+
+	case "binary":
+		b.WriteString("; ── static binary preset (minimal) ──\n")
+		b.WriteString("; no extra read/write paths — binary should be self-contained\n\n")
+	}
+}
+
+// writePermissiveFS writes allow-default filesystem rules (original behavior).
+func writePermissiveFS(b *strings.Builder, workdir, logDir, home string) {
+	b.WriteString("; ── deny file writes everywhere, re-allow specific paths ──\n")
+	b.WriteString("(deny file-write* (subpath \"/\"))\n\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", workdir))
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s\"))\n", logDir))
+	b.WriteString("(allow file-write* (subpath \"/private/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/tmp\"))\n")
+	b.WriteString("(allow file-write* (subpath \"/dev\"))\n")
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/Library/Caches\"))\n", home))
+	b.WriteString(fmt.Sprintf("(allow file-write* (subpath \"%s/.cache\"))\n", home))
+	b.WriteString("\n")
+}
+
+// writeNetworkRules writes network allow/deny rules based on config.
+func writeNetworkRules(b *strings.Builder, sb *SandboxConfig) {
+	if sb.AllowNet {
+		if sb.LocalhostOnly {
+			b.WriteString("; ── network: localhost only ──\n")
+			b.WriteString("(deny network*)\n")
+			b.WriteString("(allow network* (remote ip \"localhost:*\"))\n")
+			b.WriteString("(allow network* (local ip \"localhost:*\"))\n")
+			b.WriteString("(allow network-bind (local ip \"localhost:*\"))\n")
+			b.WriteString("(allow network* (remote unix-socket))\n")
+			b.WriteString("(allow network* (local unix-socket))\n")
+		} else {
+			b.WriteString("; ── network: full access ──\n")
+			b.WriteString("(allow network*)\n")
+		}
+	} else {
+		b.WriteString("; ── network: denied ──\n")
+		b.WriteString("(deny network*)\n")
+		// Always allow unix sockets (needed for system services)
+		b.WriteString("(allow network* (local unix-socket))\n")
+		b.WriteString("(allow network* (remote unix-socket))\n")
+	}
+	b.WriteString("\n")
 }
 
 func stopService(name string) error {

@@ -139,11 +139,56 @@ services:
     depends_on:                 # start after these services are healthy
       - inference
     sandbox:                    # filesystem + network isolation (macOS sandbox-exec)
+      preset: binary            # runtime preset: python | node | binary
       allow_net: true           # allow network access (default: false)
+      localhost_only: true      # restrict to localhost only (default: false)
       read_only:                # can read but not write these paths
         - /etc/config
       read_write:               # additional writable paths (workdir + /tmp always allowed)
         - /var/data
+      deny_exec: true           # block spawning new processes (default: false)
+```
+
+### Process sandbox
+
+MetalBox uses macOS `sandbox-exec` (Seatbelt) for process isolation. Two modes:
+
+**Permissive (default)** — allow everything, deny filesystem writes outside workdir:
+```yaml
+sandbox:
+  allow_net: true
+```
+
+**Strict (deny-default, Docker-like)** — deny everything, explicitly allow only what's needed. Enabled automatically when using a preset, or set `strict: true` manually:
+```yaml
+sandbox:
+  preset: python        # auto-configures for Python/MLX/uv runtimes
+  allow_net: true
+  localhost_only: true  # can only talk to localhost, not the internet
+```
+
+#### Runtime presets
+
+| Preset | What it allows |
+|--------|---------------|
+| `python` | pyenv, venv, conda, uv, pip, huggingface/mlx model caches |
+| `node` | nvm, npm, yarn, pnpm |
+| `binary` | Minimal — only system libs. For compiled Go/Rust/C binaries |
+
+#### What strict mode blocks by default
+
+- **Sensitive paths** — `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.docker`, `~/.kube`, `~/.pypirc`, `~/.netrc` (no credential leaks)
+- **Filesystem writes** — only workdir, logs, tmp, and caches are writable
+- **IPC** — restricts shared memory to Apple system services only
+- **Network** — denied unless `allow_net: true`; add `localhost_only: true` to block external connections
+
+You can add custom deny paths:
+```yaml
+sandbox:
+  strict: true
+  deny_paths:
+    - /Users/me/secrets
+    - /Users/me/.env
 ```
 
 ### Service dependencies
