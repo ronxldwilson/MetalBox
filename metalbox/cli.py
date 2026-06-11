@@ -227,5 +227,23 @@ def run(command, memory, metal_memory, metal_cache, cpus, name):
         os.unlink(tmp_config)
 
 
+@main.command()
+@click.pass_context
+def top(ctx):
+    """Open the interactive TUI dashboard (like lazydocker)."""
+    binary = _find_dashboard()
+    if not binary:
+        click.echo("error: metalbox-dashboard binary not found", err=True)
+        sys.exit(1)
+
+    port = ctx.obj["port"]
+    env = {**os.environ, "METALBOX_TUI": "1", "METALBOX_PORT": port}
+
+    try:
+        subprocess.run([binary], env=env)
+    except KeyboardInterrupt:
+        pass
+
+
 if __name__ == "__main__":
     main()

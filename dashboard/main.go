@@ -332,6 +332,15 @@ func main() {
 		port = v
 	}
 
+	// TUI mode
+	tuiMode := os.Getenv("METALBOX_TUI") == "1"
+	if tuiMode {
+		if err := runTUI(port); err != nil {
+			log.Fatalf("TUI error: %s", err)
+		}
+		return
+	}
+
 	restoreRunningServices()
 
 	// Port "0" = run mode: auto-start all services, no HTTP server
