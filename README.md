@@ -60,12 +60,28 @@ metalbox serve
 The dashboard runs on `localhost:9090` and provides:
 
 - **Service overview** — status, PID, RSS, CPU%, memory usage bars
+- **Sortable columns** — click any column header to sort; order persists across auto-refreshes
 - **GPU memory monitoring** — active/peak/cache usage for Metal/MLX workloads
+- **Detail panel** — click a service to see Logs, Stats, and Charts tabs
+- **Charts tab** — RSS and CPU area graphs with limit lines and time labels
 - **Resource history sparklines** — inline charts showing RSS trends over time
 - **Start / Stop / Restart** buttons per service
 - **Log viewer** with auto-refresh
 - **Event timeline** — starts, stops, OOM kills, health check failures, restarts
 - **Auto-refresh** every 3 seconds
+
+## Interactive TUI
+
+For a terminal-native experience (like lazydocker):
+
+```bash
+metalbox top
+```
+
+- Left sidebar with service list, status icons, and memory bars
+- Right panel with Logs, Stats, and Events tabs
+- Keyboard driven: `j`/`k` navigate, `Tab` switches panels, `s` start/stop, `r` restart, `q` quit
+- Auto-refreshes every 2 seconds
 
 ## CLI
 
@@ -79,11 +95,13 @@ uv tool install metalbox
 
 metalbox serve                   # start the dashboard server + web UI
 metalbox serve -d                # start in background (detached)
+metalbox top                     # interactive TUI (like lazydocker)
 metalbox ps                      # show services + resource usage
 metalbox start myapp             # start a service
 metalbox stop myapp              # stop a service
 metalbox restart myapp           # restart a service
 metalbox logs myapp              # view logs
+metalbox logs myapp -f           # follow log output (tail -f style)
 
 # One-shot execution (no server, no config file needed)
 metalbox run --memory 2g "python train.py"
@@ -246,6 +264,7 @@ metalbox/
 ├── dashboard/
 │   ├── main.go             # Go server — process supervisor, RSS guard,
 │   │                       #   health checks, Metal wrapper, REST API
+│   ├── tui.go              # bubbletea TUI (metalbox top)
 │   └── static/
 │       └── index.html      # embedded web dashboard (single file)
 ├── metalbox/
@@ -257,13 +276,16 @@ metalbox/
 
 The Go binary is the runtime — it handles everything:
 - Process lifecycle (start, stop, restart, PID files)
+- PID ownership verification (prevents killing unrelated processes on PID reuse)
 - RSS memory watchdog (kill + restart on exceed)
 - Metal/MLX memory limit injection (auto-generated Python wrapper)
 - CPU policy via `taskpolicy`
 - Health checks (HTTP, TCP, command)
+- Process sandboxing via macOS sandbox-exec (Seatbelt)
 - Log capture to `~/.metalbox/logs/`
-- Web dashboard + REST API
+- Web dashboard + REST API + interactive TUI
 - Event tracking (OOM kills, health failures, restarts)
+- Graceful shutdown (SIGINT/SIGTERM kills only owned processes)
 
 The Python CLI is optional — a thin client that calls the REST API for terminal use.
 
@@ -299,7 +321,7 @@ cd metalbox
 pip install dist/*.whl
 ```
 
-Pre-built wheels are published for both **Apple Silicon (arm64)** and **Intel (x86_64)** Macs. `pip install` automatically picks the right one for your architecture.
+Pre-built wheels are published for **Apple Silicon (arm64)** Macs. Intel Macs are not supported (Metal requires Apple Silicon).
 
 ## Requirements
 
