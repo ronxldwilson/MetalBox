@@ -1,4 +1,4 @@
-"""MetalBox CLI — thin client + server launcher."""
+"""MetalBox CLI — lightweight process containerization for macOS Apple Silicon."""
 from __future__ import annotations
 
 import json
@@ -19,11 +19,9 @@ DEFAULT_PORT = "9090"
 
 def _find_dashboard() -> str | None:
     """Find the metalbox-dashboard binary."""
-    # 1. Bundled in package
     pkg = Path(__file__).parent / "bin" / "metalbox-dashboard"
     if pkg.exists():
         return str(pkg)
-    # 2. On PATH
     from shutil import which
     return which("metalbox-dashboard")
 
@@ -46,28 +44,62 @@ def _api(path: str, method: str = "GET", port: str = DEFAULT_PORT) -> dict | str
         sys.exit(1)
 
 
-@click.group()
-@click.version_option(__version__)
-@click.option("-p", "--port", default=DEFAULT_PORT, envvar="METALBOX_PORT", help="Dashboard server port")
+def _status_icon(status: str) -> str:
+    if status == "running":
+        return click.style("●", fg="green")
+    if status == "stopped":
+        return click.style("○", fg="white", dim=True)
+    return click.style("●", fg="red")
+
+
+def _require_binary():
+    binary = _find_dashboard()
+    if not binary:
+        click.echo("error: metalbox-dashboard binary not found", err=True)
+        click.echo("install with: pip install metalbox", err=True)
+        sys.exit(1)
+    return binary
+
+
+class OrderedGroup(click.Group):
+    """Click group that preserves command order."""
+
+    def list_commands(self, ctx):
+        return list(self.commands.keys())
+
+
+HELP_TEXT = """
+\b
+MetalBox — native process containerization for macOS Apple Silicon.
+Run ML workloads with Metal/MLX GPU access and Docker-like resource limits.
+
+\b
+Quick start:
+  metalbox serve                         Start dashboard + web UI
+  metalbox top                           Interactive TUI (like lazydocker)
+  metalbox run --memory 2g "python x.py" One-shot with limits
+"""
+
+
+@click.group(cls=OrderedGroup, help=HELP_TEXT)
+@click.version_option(__version__, prog_name="metalbox")
+@click.option("-p", "--port", default=DEFAULT_PORT, envvar="METALBOX_PORT",
+              help="Dashboard port [default: 9090]")
 @click.pass_context
 def main(ctx, port):
-    """MetalBox — lightweight process containerization for macOS Apple Silicon."""
     ctx.ensure_object(dict)
     ctx.obj["port"] = port
 
 
+# ── Server ──
+
 @main.command()
-@click.option("-f", "--file", "config", default="metalbox.yml", help="Config file")
+@click.option("-f", "--file", "config", default="metalbox.yml", help="Config file path")
 @click.option("-p", "--port", default=DEFAULT_PORT, help="Dashboard port")
 @click.option("-d", "--detach", is_flag=True, help="Run in background")
 def serve(config, port, detach):
-    """Start the metalbox dashboard server."""
-    binary = _find_dashboard()
-    if not binary:
-        click.echo("error: metalbox-dashboard binary not found", err=True)
-        click.echo("install metalbox with: pip install metalbox", err=True)
-        sys.exit(1)
-
+    """Start the dashboard server + web UI."""
+    binary = _require_binary()
     config_abs = str(Path(config).resolve())
     env = {**os.environ, "METALBOX_CONFIG": config_abs, "METALBOX_PORT": port}
 
@@ -77,10 +109,10 @@ def serve(config, port, detach):
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        click.echo(f"metalbox dashboard started on http://localhost:{port} (pid {proc.pid})")
+        click.echo(f"metalbox started on http://localhost:{port} (pid {proc.pid})")
         return
 
-    click.echo(f"metalbox dashboard on http://localhost:{port}")
+    click.echo(f"metalbox dashboard → http://localhost:{port}")
     try:
         subprocess.run([binary], env=env)
     except KeyboardInterrupt:
@@ -89,27 +121,64 @@ def serve(config, port, detach):
 
 @main.command()
 @click.pass_context
+def top(ctx):
+    """Interactive TUI dashboard (like lazydocker)."""
+    binary = _require_binary()
+    port = ctx.obj["port"]
+    env = {**os.environ, "METALBOX_TUI": "1", "METALBOX_PORT": port}
+    try:
+        subprocess.run([binary], env=env)
+    except KeyboardInterrupt:
+        pass
+
+
+# ── Services ──
+
+@main.command()
+@click.pass_context
 def ps(ctx):
-    """Show running services."""
+    """List services and resource usage."""
     port = ctx.obj["port"]
     services = _api("/api/services", port=port)
     if not services:
         click.echo("no services configured")
         return
 
-    click.echo(f"{'SERVICE':<20} {'PID':<8} {'STATUS':<12} {'RSS':<10} {'LIMIT':<10} {'HEALTH':<8}")
-    click.echo("-" * 68)
+    # Header
+    click.echo(
+        f"  {'SERVICE':<18} {'STATUS':<11} {'PID':<8} "
+        f"{'RSS':<10} {'LIMIT':<10} {'CPU':<8} {'HEALTH':<8}"
+    )
+    click.echo("  " + "─" * 73)
+
     for s in services:
-        pid = str(s.get("pid") or "-")
+        icon = _status_icon(s.get("status", "unknown"))
+        name = s["name"]
         status = s.get("status", "unknown")
-        rss = f"{s['rss_mb']:.0f}MB" if s.get("rss_mb") else "-"
-        limit = f"{s['limit_mb']:.0f}MB" if s.get("limit_mb") else "-"
-        healthy = "-"
+        pid = str(s.get("pid") or "–")
+        rss = f"{s['rss_mb']:.0f} MB" if s.get("rss_mb") else "–"
+        limit = f"{s['limit_mb']:.0f} MB" if s.get("limit_mb") else "–"
+        cpu = f"{s['cpu_percent']:.1f}%" if s.get("cpu_percent") is not None else "–"
+        healthy = "–"
         if s.get("healthy") is True:
-            healthy = "ok"
+            healthy = click.style("✓", fg="green")
         elif s.get("healthy") is False:
-            healthy = "FAIL"
-        click.echo(f"{s['name']:<20} {pid:<8} {status:<12} {rss:<10} {limit:<10} {healthy:<8}")
+            healthy = click.style("✗", fg="red")
+
+        click.echo(
+            f"  {icon} {name:<17} {status:<10} {pid:<8} "
+            f"{rss:<10} {limit:<10} {cpu:<8} {healthy}"
+        )
+
+    # Summary
+    running = sum(1 for s in services if s.get("status") == "running")
+    total_rss = sum(s.get("rss_mb") or 0 for s in services)
+    click.echo()
+    click.echo(
+        f"  {len(services)} services, "
+        f"{click.style(str(running), fg='green')} running, "
+        f"{total_rss:.0f} MB total"
+    )
 
 
 @main.command()
@@ -122,7 +191,7 @@ def start(ctx, service):
     if isinstance(result, dict) and result.get("error"):
         click.echo(f"error: {result['error']}", err=True)
     else:
-        click.echo(f"{service} started")
+        click.echo(f"{_status_icon('running')} {service} started")
 
 
 @main.command()
@@ -135,7 +204,7 @@ def stop(ctx, service):
     if isinstance(result, dict) and result.get("error"):
         click.echo(f"error: {result['error']}", err=True)
     else:
-        click.echo(f"{service} stopped")
+        click.echo(f"{_status_icon('stopped')} {service} stopped")
 
 
 @main.command()
@@ -148,34 +217,52 @@ def restart(ctx, service):
     if isinstance(result, dict) and result.get("error"):
         click.echo(f"error: {result['error']}", err=True)
     else:
-        click.echo(f"{service} restarted")
+        click.echo(f"{_status_icon('running')} {service} restarted")
 
 
 @main.command()
 @click.argument("service")
 @click.option("-n", "--lines", default=100, help="Number of lines")
+@click.option("-f", "--follow", is_flag=True, help="Follow log output")
 @click.pass_context
-def logs(ctx, service, lines):
-    """Show service logs."""
+def logs(ctx, service, lines, follow):
+    """View service logs."""
+    import time as _time
+
     port = ctx.obj["port"]
     text = _api(f"/api/logs/{service}?lines={lines}", port=port)
-    click.echo(text)
+    click.echo(text, nl=False)
 
+    if follow:
+        seen = len(text)
+        try:
+            while True:
+                _time.sleep(1)
+                text = _api(f"/api/logs/{service}?lines=500", port=port)
+                if len(text) > seen:
+                    click.echo(text[seen:], nl=False)
+                    seen = len(text)
+        except KeyboardInterrupt:
+            pass
+
+
+# ── One-shot ──
 
 @main.command()
 @click.argument("command", nargs=-1, required=True)
-@click.option("--memory", "-m", default=None, help="RSS memory limit (e.g. 2g, 512m)")
+@click.option("-m", "--memory", default=None, help="RSS memory limit (e.g. 2g, 512m)")
 @click.option("--metal-memory", default=None, help="Metal GPU memory limit")
 @click.option("--metal-cache", default=None, help="Metal cache limit")
-@click.option("--cpus", default="default", help="CPU policy: default or background")
-@click.option("--name", default=None, help="Service name (default: derived from command)")
+@click.option("--cpus", default="default", type=click.Choice(["default", "background"]),
+              help="CPU policy")
+@click.option("--name", default=None, help="Service name")
 def run(command, memory, metal_memory, metal_cache, cpus, name):
-    """Run a one-shot command with resource limits (no server needed).
+    """Run a command with resource limits (no config file needed).
 
     \b
     Examples:
       metalbox run --memory 2g "python train.py"
-      metalbox run --memory 512m --metal-memory 1g "python -m uvicorn app:app"
+      metalbox run -m 512m --metal-memory 1g "python -m uvicorn app:app"
       metalbox run --cpus background "python bench.py"
     """
     import tempfile
@@ -183,8 +270,10 @@ def run(command, memory, metal_memory, metal_cache, cpus, name):
     cmd_str = " ".join(command)
     svc_name = name or "run-" + cmd_str.split()[0].split("/")[-1].replace(".", "-")[:20]
 
-    # Build YAML manually to avoid pyyaml dependency
-    lines = ["services:", f"  {svc_name}:", f"    command: {cmd_str}", f"    workdir: {os.getcwd()}", '    restart: "no"', "    resources:"]
+    lines = [
+        "services:", f"  {svc_name}:", f"    command: {cmd_str}",
+        f"    workdir: {os.getcwd()}", '    restart: "no"', "    resources:",
+    ]
     if memory:
         lines.append(f"      memory: {memory}")
     if metal_memory:
@@ -194,10 +283,7 @@ def run(command, memory, metal_memory, metal_cache, cpus, name):
     if cpus != "default":
         lines.append(f"      cpus: {cpus}")
 
-    binary = _find_dashboard()
-    if not binary:
-        click.echo("error: metalbox-dashboard binary not found", err=True)
-        sys.exit(1)
+    binary = _require_binary()
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False, prefix="metalbox-run-") as f:
         f.write("\n".join(lines) + "\n")
@@ -215,34 +301,15 @@ def run(command, memory, metal_memory, metal_cache, cpus, name):
     env = {**os.environ, "METALBOX_CONFIG": tmp_config, "METALBOX_PORT": "0"}
 
     try:
+        import time as _time
         proc = subprocess.Popen([binary], env=env)
-        # Give it time to start the service
-        import time
-        time.sleep(1)
+        _time.sleep(1)
         proc.wait()
     except KeyboardInterrupt:
         proc.terminate()
         proc.wait()
     finally:
         os.unlink(tmp_config)
-
-
-@main.command()
-@click.pass_context
-def top(ctx):
-    """Open the interactive TUI dashboard (like lazydocker)."""
-    binary = _find_dashboard()
-    if not binary:
-        click.echo("error: metalbox-dashboard binary not found", err=True)
-        sys.exit(1)
-
-    port = ctx.obj["port"]
-    env = {**os.environ, "METALBOX_TUI": "1", "METALBOX_PORT": port}
-
-    try:
-        subprocess.run([binary], env=env)
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":
