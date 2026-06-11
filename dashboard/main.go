@@ -92,6 +92,7 @@ type Config struct {
 type serviceState struct {
 	mu              sync.Mutex
 	pid             int
+	command         string // expected command, for PID ownership verification
 	restarts        int
 	guardStop       chan struct{}
 	healthStop      chan struct{}
@@ -472,6 +473,7 @@ func restoreRunningServices() {
 		}
 		st := getState(name)
 		st.pid = pid
+		st.command = svc.Command
 		st.guardStop = make(chan struct{})
 		go rssGuard(name, pid, parseBytes(svc.Resources.Memory), svc, st)
 		if svc.Healthcheck != nil {
@@ -804,6 +806,7 @@ func startService(name string, svc ServiceConfig) error {
 
 	st.mu.Lock()
 	st.pid = pid
+	st.command = svc.Command
 	st.healthy = nil
 	addEvent(st, "started", fmt.Sprintf("pid %d", pid))
 	if svc.Resources.CPUs == "background" {
@@ -1167,15 +1170,18 @@ func stopService(name string) error {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(pidData)))
 	if pid > 0 {
-		killProcessTree(pid, syscall.SIGTERM)
-		for i := 0; i < 10; i++ {
-			time.Sleep(500 * time.Millisecond)
-			if !anyTreeAlive(pid) {
-				break
+		if !verifiedKillProcessTree(pid, syscall.SIGTERM, st.command) {
+			log.Printf("[%s] PID %d reused by another process, skipping kill", name, pid)
+		} else {
+			for i := 0; i < 10; i++ {
+				time.Sleep(500 * time.Millisecond)
+				if !anyTreeAlive(pid) {
+					break
+				}
 			}
-		}
-		if anyTreeAlive(pid) {
-			killProcessTree(pid, syscall.SIGKILL)
+			if anyTreeAlive(pid) {
+				verifiedKillProcessTree(pid, syscall.SIGKILL, st.command)
+			}
 		}
 	}
 	os.Remove(pidFile)
@@ -1210,6 +1216,14 @@ func rssGuard(name string, pid int, memLimit int64, svc ServiceConfig, st *servi
 			if !processAlive(pid) {
 				return
 			}
+			// Verify PID still belongs to us (guards against PID reuse)
+			st.mu.Lock()
+			expectedCmd := st.command
+			st.mu.Unlock()
+			if expectedCmd != "" && !processMatchesCommand(pid, expectedCmd) {
+				log.Printf("[%s] PID %d reused by another process, stopping guard", name, pid)
+				return
+			}
 
 			rss, _ := getProcessStats(pid)
 			if rss <= 0 {
@@ -1223,12 +1237,16 @@ func rssGuard(name string, pid int, memLimit int64, svc ServiceConfig, st *servi
 
 				st.mu.Lock()
 				addEvent(st, "oom-kill", fmt.Sprintf("memory %.0fMB > limit %.0fMB", rssMB, limitMB))
+				expectedCmd := st.command
 				st.mu.Unlock()
 
-				killProcessTree(pid, syscall.SIGTERM)
+				if !verifiedKillProcessTree(pid, syscall.SIGTERM, expectedCmd) {
+					log.Printf("[%s] PID %d reused, aborting OOM kill", name, pid)
+					return
+				}
 				time.Sleep(5 * time.Second)
 				if anyTreeAlive(pid) {
-					killProcessTree(pid, syscall.SIGKILL)
+					verifiedKillProcessTree(pid, syscall.SIGKILL, expectedCmd)
 				}
 				os.Remove(filepath.Join(runDir, name+".pid"))
 				return
@@ -1414,12 +1432,39 @@ func getDescendants(pid int) []int {
 }
 
 // killProcessTree kills a process and all its descendants, bottom-up.
+// It verifies the root PID is still the process we expect before killing.
 func killProcessTree(pid int, sig syscall.Signal) {
-	descendants := getDescendants(pid)
-	for i := len(descendants) - 1; i >= 0; i-- {
-		syscall.Kill(descendants[i], sig)
+	if !processAlive(pid) {
+		return
 	}
-	syscall.Kill(pid, sig)
+	// Snapshot descendants BEFORE killing anything — once the parent dies,
+	// children may reparent and pgrep -P won't find them.
+	descendants := getDescendants(pid)
+
+	// Kill bottom-up (deepest children first)
+	for i := len(descendants) - 1; i >= 0; i-- {
+		child := descendants[i]
+		if processAlive(child) {
+			syscall.Kill(child, sig)
+		}
+	}
+	if processAlive(pid) {
+		syscall.Kill(pid, sig)
+	}
+}
+
+// verifiedKillProcessTree checks PID ownership before killing.
+// Returns false if the PID doesn't belong to us (PID was reused).
+func verifiedKillProcessTree(pid int, sig syscall.Signal, expectedCmd string) bool {
+	if !processAlive(pid) {
+		return false
+	}
+	if expectedCmd != "" && !processMatchesCommand(pid, expectedCmd) {
+		log.Printf("[safety] PID %d no longer matches expected command, skipping kill", pid)
+		return false
+	}
+	killProcessTree(pid, sig)
+	return true
 }
 
 // anyTreeAlive checks if any process in the tree is still running.
